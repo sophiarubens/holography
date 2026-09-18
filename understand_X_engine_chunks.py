@@ -8,6 +8,7 @@ single_vis_file="vis_0004224754_20260913T_130433_035210550.h5"
 
 with h5py.File(holography_directory+single_vis_file, "r") as f:
     print(list(f.keys()))
+    print(list(f.attrs))
     visibilities=f["vis"][()]
     visweights=f["vis_weight"][()]
     bfm=f["bf_mask"]
