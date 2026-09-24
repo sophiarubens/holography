@@ -129,7 +129,7 @@ def coord_arrays_to_HERA_format(x_arr,y_arr,z_arr=None,antenna_mask=None):
         y_flattened=y_flattened[mask_flattened]
         z_flattened=z_flattened[mask_flattened]
 
-    coords_all=np.asarray([x_flattened,y_flattened,z_flattened])
+    coords_all=np.asarray([x_flattened,y_flattened,z_flattened]).T
     coords_HERA_format=dict(enumerate(coords_all))
     return coords_HERA_format 
 
@@ -162,7 +162,7 @@ def simulate_sky(Nside=64,
     
 def simulate_visibilities(simulator="fftvis",
                           fftvis_backend="cpu",
-                          antpos=coord_arrays_to_HERA_format(holog_PF_EW,holog_PF_NS),
+                          antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
                           beam=AiryBeam(diameter=6.0),
                           freqs=np.linspace(300e6,1500e6,NFREQS),
                           times=TIMES,
@@ -222,11 +222,12 @@ def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt)
     return N2_filtered
 
 
+sample_HERA_format=coord_arrays_to_HERA_format(E_unitless,N_unitless)
+print("sample_HERA_format.keys() =",sample_HERA_format.keys())
+print('sample_HERA_format["0"].shape =',sample_HERA_format["0"].shape)
 
 
-
-
-
+# assert 1==0
 t0=time.time()
 vis_fftvis_cpu=simulate_visibilities(simulator="fftvis",
                                         fftvis_backend="cpu")
