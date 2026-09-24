@@ -6,7 +6,7 @@ from astropy.time import Time
 from astropy.units import Quantity
 from astropy import units as u
 
-# import fftvis
+import fftvis
 import matvis
 
 import healpy as hp
@@ -185,7 +185,9 @@ def simulate_visibilities(simulator="fftvis",
                                           backend=fftvis_backend  # Explicitly specify the backend (new parameter)
                                         ) # cf. https://github.com/tyler-a-cox/fftvis/blob/main/docs/tutorials/fftvis_tutorial.ipynb
     elif simulator=="matvis":
-        rng=np.random.default_rng()
+        leading_order_beams=[AiryBeam(diameter=6.0),AiryBeam(diameter=26.0)]
+        antenna_diameter_indices=np.zeros(len(antpos))
+        antenna_diameter_indices[-1]=0
         visibilities=matvis.simulate_vis(
                                           ants=antpos,
                                           fluxes=CHIME_FLUX_ALLFREQ,
@@ -194,7 +196,7 @@ def simulate_visibilities(simulator="fftvis",
                                           freqs=freqs,
                                           times=times.jd,
                                           telescope_loc=telescope_loc,
-                                          beams=[GaussianBeam(sigma=0.5),GaussianBeam(sigma=0.51)], beam_idx=rng.randint(len(antpos)),
+                                          beams=leading_order_beams, beam_idx=antenna_diameter_indices,
                                           polarized=False,
                                           precision=2, # single/double precision, i.e. 32- vs. 64-bit floats
                                           # nprocesses=, # I'm pretty sure this only figures into the fftvis algorithm
