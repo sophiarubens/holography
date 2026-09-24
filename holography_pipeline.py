@@ -188,6 +188,7 @@ def simulate_visibilities(simulator="fftvis",
         leading_order_beams=[AiryBeam(diameter=6.0),AiryBeam(diameter=26.0)]
         antenna_diameter_indices=np.zeros(len(antpos))
         antenna_diameter_indices[-1]=0
+        use_gpu=True if matvis_backend=="gpu" else False
         visibilities=matvis.simulate_vis(
                                           ants=antpos,
                                           fluxes=CHIME_FLUX_ALLFREQ,
@@ -201,7 +202,7 @@ def simulate_visibilities(simulator="fftvis",
                                           precision=2, # single/double precision, i.e. 32- vs. 64-bit floats
                                           # nprocesses=, # I'm pretty sure this only figures into the fftvis algorithm
                                           # baselines=,
-                                          backend=matvis_backend # I'm pretty sure this only figures into the fftvis algorithm
+                                          use_gpu=use_gpu
                                         ) # cf. https://matvis.readthedocs.io/en/latest/tutorials/matvis_tutorial.html
     else:
         raise ValueError("Unknown drift-scan visibility simulator. Try fftvis or matvis")
