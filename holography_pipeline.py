@@ -6,7 +6,6 @@ from astropy.time import Time
 from astropy.units import Quantity
 from astropy import units as u
 
-import fftvis
 import matvis
 
 import healpy as hp
@@ -19,18 +18,125 @@ FREQS=np.linspace(590,610,NFREQS)*u.MHz
 NTIMES=30
 JD0=2461274
 JD1=JD0+0.05
-TIMES=Time(np.linspace(JD0, JD1, NTIMES), format="jd", scale="utc") 
+time_vec=np.linspace(JD0, JD1, NTIMES)
+TIMES=Time(time_vec, format="jd", scale="utc") 
 DRAO=EarthLocation.of_site("drao") # coordinates in the astropy database are for Galt, but this is convenient and good enough for now
 
-# fftvis convention:
 # polarized visibility matrices are indexed as (N freqs, N times, N feed i, N feed j, N baselines)
 # unpolarized visibility matrices are indexed as (N freqs, N times, N antennas, N antennas) *IMPORTANT* AnalyticBeam objects don't support polarization
 
-# based upon fftvis_tutorial.ipynb
 
-# sky model (use a point source decomposition and healpix representation)
+def coord_arrays_to_HERA_format(x_arr,y_arr,z_arr=None,antenna_mask=None):
+    if z_arr is None:               # fallback: flat array
+        z_arr=np.zeros_like(x_arr)
+    if isinstance (x_arr,Quantity): # strip astropy units
+        x_arr=x_arr.value
+        y_arr=y_arr.value
+        z_arr=z_arr.value
 
-# RAs are just placeholders for now because I'm tired of tracking down catalogue values for today
+    N_ant=np.size(z_arr)
+    x_flattened=np.reshape(x_arr,(N_ant,)) # make 1D
+    y_flattened=np.reshape(y_arr,(N_ant,))
+    z_flattened=np.reshape(z_arr,(N_ant,))
+
+    if antenna_mask is not None:
+        mask_flattened=np.reshape(antenna_mask,(N_ant,))
+        x_flattened=x_flattened[mask_flattened]
+        y_flattened=y_flattened[mask_flattened]
+        z_flattened=z_flattened[mask_flattened]
+
+    coords_all=np.asarray([x_flattened,y_flattened,z_flattened]).T
+    coords_HERA_format=dict(enumerate(coords_all))
+    return coords_HERA_format 
+
+def simulate_sky(Nside=64,
+                 freqs=FREQS,
+                 mode="CHIME_match"):
+    Npix=hp.nside2npix(Nside)
+    # sky coord grid is a precursor for populating pixels as point sources distributed randomly across the sky
+    ra = np.deg2rad(np.random.uniform(0, 360, Npix))     # source RAs (rad)
+    dec = np.deg2rad(np.random.uniform(-90, 90.0, Npix)) # source decs (rad)
+    dec, ra = hp.pix2ang(Nside, np.arange(Npix))
+    dec -= np.pi / 2
+
+    # consider only smooth-spectrum sources
+    flux = np.random.uniform(0, 1, Npix) # source fluxes at 100MHz (Jy)
+    alpha = np.ones(Npix) * -0.8         # source spectral indices
+
+    if mode=="CHIME_match": # overwrite some of the random sources with bright point sources from the dictionary
+        for i,src in enumerate(CHIME_match):
+            S600=src["S600"]
+            alpha[i]=src["alpha"]
+            flux[i]=S600*(1/6)**alpha # S100
+            ra[i]=src["ra"]
+            dec[i]=src["dec"]
+
+    # spectra of all sources (Nsource x Nfreq) 
+    spectra = ((freqs[:, np.newaxis] / freqs[0]) ** alpha.T * flux.T).T
+
+    return [ra,dec],spectra
+    
+def simulate_visibilities(simulator="fftvis",
+                          matvis_backend="cpu",
+                          antpos=None,
+                          beam=AiryBeam(diameter=6.0),
+                          freqs=np.linspace(300e6,1500e6,NFREQS),
+                          times=TIMES,
+                          telescope_loc=DRAO):
+    leading_order_beams=[AiryBeam(diameter=6.0),AiryBeam(diameter=26.0)]
+    antenna_diameter_indices=np.zeros(len(antpos),dtype=int)
+    antenna_diameter_indices[-1]=int(1)
+    use_gpu=True if matvis_backend=="gpu" else False
+    visibilities=matvis.simulate_vis(
+                                        ants=antpos,
+                                        fluxes=CHIME_FLUX_ALLFREQ,
+                                        ra=CHIME_RA,
+                                        dec=CHIME_DEC,
+                                        freqs=freqs,
+                                        times=times,
+                                        telescope_loc=telescope_loc,
+                                        beams=leading_order_beams, beam_idx=antenna_diameter_indices,
+                                        polarized=False,
+                                        precision=2, # single/double precision, i.e. 32- vs. 64-bit floats
+                                        # nprocesses=, # I'm pretty sure this only figures into the fftvis algorithm
+                                        # baselines=,
+                                        use_gpu=use_gpu
+                                    ) # cf. https://matvis.readthedocs.io/en/latest/tutorials/matvis_tutorial.html
+    return visibilities
+
+def manually_track_with_Galt(matvis_backend="cpu",
+                             antpos=None,
+                             beam=AiryBeam(diameter=6.0),
+                             freqs=np.linspace(300e6,1500e6,NFREQS),
+                             time_vec=time_vec,
+                             telescope_loc=DRAO):
+    Nant=len(antpos)
+    Ntime=len(time_vec)
+    Nfreq=len(freqs) # might not be NFREQS in the case of having overwritten the keyword fallback
+    Galt_tracked_visibilities=np.zeros((Nfreq,Ntime,Nant,Nant))
+    for i,time in enumerate(time_vec):
+        vis_i=simulate_visibilities(matvis_backend=matvis_backend,
+                                    antpos=antpos,
+                                    beam=beam,
+                                    freqs=freqs,
+                                    times=time,
+                                    telescope_loc=telescope_loc)
+        Galt_tracked_visibilities[:,i,:,:]=vis_i 
+
+def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt):
+    freq_axis=0 # I dunno if these will come in handy
+    time_axis=1
+    N2_ndim=N2.ndim # number of dimensions in the visibility matrix
+    if N2_ndim==6: # Nfreq, Ntime, Nfeed, Nfeed, Nant, Nant
+        feed_axes=[2,3]
+    elif N2_ndim!=4: # Nfreq, Ntime, Nant, Nant
+        raise TypeError("shape of visibility matrix is consistent with neither polarized nor unpolarized visibilities")
+
+    CHORD_Galt_baselines=np.nonzero(baselines_with_CHORD & baselines_with_Galt)
+    N2temp=      np.take_along_axis(N2,     CHORD_Galt_baselines, axis=-1)
+    N2_filtered= np.take_along_axis(N2temp, CHORD_Galt_baselines, axis=-1)# original axis -2 is current axis -1
+    return N2_filtered
+
 CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible values not in direct tension with [https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8](https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8)
              "CasA": {"dec":58.8, "ra":23.3900, "S600":2375, "alpha":-2,    "confN": 0.03},
              "TauA": {"dec":22.0, "ra":5.5755,  "S600":1142, "alpha":-0.3,  "confN": 0.06},
@@ -101,148 +207,19 @@ plt.title("holog coordinates")
 plt.savefig("holog_coords.png")
 plt.close()
 
-# clicking 116 m east, 6 m north
-
-N_PF_EW=7
-N_PF_NS=10
-PF_array_EW, PF_array_NS = np.meshgrid(CHORD_NS_bl*fftshift(fftfreq(N_PF_NS)),
-                                       CHORD_EW_bl*fftshift(fftfreq(N_PF_EW)), indexing="ij")
-holog_PF_EW=list(np.reshape(PF_array_EW,N_PF_EW*N_PF_NS)).append(Galt_EW)
-holog_PF_NS=list(np.reshape(PF_array_NS,N_PF_EW*N_PF_NS)).append(Galt_NS)
-
-def coord_arrays_to_HERA_format(x_arr,y_arr,z_arr=None,antenna_mask=None):
-    if z_arr is None:               # fallback: flat array
-        z_arr=np.zeros_like(x_arr)
-    if isinstance (x_arr,Quantity): # strip astropy units
-        x_arr=x_arr.value
-        y_arr=y_arr.value
-        z_arr=z_arr.value
-
-    N_ant=np.size(z_arr)
-    x_flattened=np.reshape(x_arr,(N_ant,)) # make 1D
-    y_flattened=np.reshape(y_arr,(N_ant,))
-    z_flattened=np.reshape(z_arr,(N_ant,))
-
-    if antenna_mask is not None:
-        mask_flattened=np.reshape(antenna_mask,(N_ant,))
-        x_flattened=x_flattened[mask_flattened]
-        y_flattened=y_flattened[mask_flattened]
-        z_flattened=z_flattened[mask_flattened]
-
-    coords_all=np.asarray([x_flattened,y_flattened,z_flattened]).T
-    coords_HERA_format=dict(enumerate(coords_all))
-    return coords_HERA_format 
-
-def simulate_sky(Nside=64,
-                 freqs=FREQS,
-                 mode="CHIME_match"):
-    Npix=hp.nside2npix(Nside)
-    # sky coord grid is a precursor for populating pixels as point sources distributed randomly across the sky
-    ra = np.deg2rad(np.random.uniform(0, 360, Npix))     # source RAs (rad)
-    dec = np.deg2rad(np.random.uniform(-90, 90.0, Npix)) # source decs (rad)
-    dec, ra = hp.pix2ang(Nside, np.arange(Npix))
-    dec -= np.pi / 2
-
-    # consider only smooth-spectrum sources
-    flux = np.random.uniform(0, 1, Npix) # source fluxes at 100MHz (Jy)
-    alpha = np.ones(Npix) * -0.8         # source spectral indices
-
-    if mode=="CHIME_match": # overwrite some of the random sources with bright point sources from the dictionary
-        for i,src in enumerate(CHIME_match):
-            S600=src["S600"]
-            alpha[i]=src["alpha"]
-            flux[i]=S600*(1/6)**alpha # S100
-            ra[i]=src["ra"]
-            dec[i]=src["dec"]
-
-    # spectra of all sources (Nsource x Nfreq) 
-    spectra = ((freqs[:, np.newaxis] / freqs[0]) ** alpha.T * flux.T).T
-
-    return [ra,dec],spectra
-    
-def simulate_visibilities(simulator="fftvis",
-                          matvis_backend="cpu",
-                          antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
-                          beam=AiryBeam(diameter=6.0),
-                          freqs=np.linspace(300e6,1500e6,NFREQS),
-                          times=TIMES,
-                          telescope_loc=DRAO):
-    if simulator=="fftvis":
-        baselines=baselines = [(i, j) for i in range(len(antpos)) for j in range(len(antpos))]
-        visibilities=fftvis.simulate_vis(
-                                          ants=antpos,
-                                          fluxes=CHIME_FLUX_ALLFREQ,
-                                          ra=CHIME_RA,
-                                          dec=CHIME_DEC,
-                                          freqs=freqs,
-                                          times=times.jd,
-                                          telescope_loc=telescope_loc,
-                                          beam=beam,
-                                          polarized=False,
-                                          precision=2,
-                                          nprocesses=1,
-                                          baselines=baselines,
-                                          backend=matvis_backend  # Explicitly specify the backend (new parameter)
-                                        ) # cf. https://github.com/tyler-a-cox/fftvis/blob/main/docs/tutorials/fftvis_tutorial.ipynb
-    elif simulator=="matvis":
-        leading_order_beams=[AiryBeam(diameter=6.0),AiryBeam(diameter=26.0)]
-        antenna_diameter_indices=np.zeros(len(antpos))
-        antenna_diameter_indices[-1]=0
-        use_gpu=True if matvis_backend=="gpu" else False
-        visibilities=matvis.simulate_vis(
-                                          ants=antpos,
-                                          fluxes=CHIME_FLUX_ALLFREQ,
-                                          ra=CHIME_RA,
-                                          dec=CHIME_DEC,
-                                          freqs=freqs,
-                                          times=times.jd,
-                                          telescope_loc=telescope_loc,
-                                          beams=leading_order_beams, beam_idx=antenna_diameter_indices,
-                                          polarized=False,
-                                          precision=2, # single/double precision, i.e. 32- vs. 64-bit floats
-                                          # nprocesses=, # I'm pretty sure this only figures into the fftvis algorithm
-                                          # baselines=,
-                                          use_gpu=use_gpu
-                                        ) # cf. https://matvis.readthedocs.io/en/latest/tutorials/matvis_tutorial.html
-    else:
-        raise ValueError("Unknown drift-scan visibility simulator. Try fftvis or matvis")
-    return visibilities
-
-def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt):
-    freq_axis=0 # I dunno if these will come in handy
-    time_axis=1
-    N2_ndim=N2.ndim # number of dimensions in the visibility matrix
-    if N2_ndim==6: # Nfreq, Ntime, Nfeed, Nfeed, Nant, Nant
-        feed_axes=[2,3]
-    elif N2_ndim!=4: # Nfreq, Ntime, Nant, Nant
-        raise TypeError("shape of visibility matrix is consistent with neither polarized nor unpolarized visibilities")
-
-    CHORD_Galt_baselines=np.nonzero(baselines_with_CHORD & baselines_with_Galt)
-    N2temp=      np.take_along_axis(N2,     CHORD_Galt_baselines, axis=-1)
-    N2_filtered= np.take_along_axis(N2temp, CHORD_Galt_baselines, axis=-1)# original axis -2 is current axis -1
-    return N2_filtered
-
-
-sample_HERA_format=coord_arrays_to_HERA_format(E_unitless,N_unitless)
-print("sample_HERA_format.keys() =",sample_HERA_format.keys())
-# print('sample_HERA_format["0"].shape =',sample_HERA_format["0"].shape)
-
 
 # assert 1==0
-t0=time.time()
-# already got this from job 61349959
-# vis_fftvis_cpu=simulate_visibilities(simulator="fftvis")
 t1=time.time()
-# print("fftvis CPU simulation took {} s".format(t1-t0))
-# np.savez("fftvis_cpu_holog.npz",vis_fftvis_cpu)
-
 vis_matvis_cpu=simulate_visibilities(simulator="matvis",
+                                     antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
                                      matvis_backend="cpu")
 t2=time.time()
 print("fftvis CPU simulation took {} s".format(t2-t1))
 np.savez("matvis_cpu_holog.npz",vis_matvis_cpu)
 
+assert(1==0)
 vis_matvis_gpu=    simulate_visibilities(simulator="matvis",
+                                         antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
                                          matvis_backend="gpu")
 t3=time.time()
 print("matvis simulation took {} s".format(t3-t2))
