@@ -31,20 +31,20 @@ DRAO=EarthLocation.of_site("drao") # coordinates in the astropy database are for
 # sky model (use a point source decomposition and healpix representation)
 
 # RAs are just placeholders for now because I'm tired of tracking down catalogue values for today
-CHIME_match={"CygA": {"dec":40.7, "ra":0,    "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible values not in direct tension with https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8
-             "CasA": {"dec":58.8, "ra":2,    "S600":2375, "alpha":-2,    "confN": 0.03},
-             "TauA": {"dec":22.0, "ra":4,    "S600":1142, "alpha":-0.3,  "confN": 0.06},
-             "PerB": {"dec":29.7, "ra":6,    "S600":  87, "alpha":-1.3,  "confN": 0.8}, # https://arxiv.org/html/2603.23587v1#S5
-             "3C10C":{"dec":64.2, "ra":8,    "S600":  71, "alpha":-0.62, "confN": 7}, # couldn't find an actual source or any references other than the CHIME paper (although I didn't do a full recursive search) so I'm using the 3C10 value as a placeholder
-             "3C84": {"dec":41.5, "ra":10,   "S600":  38, "alpha":-0.93, "confN":10}, # from the 3C catalogue paper
-             "3C295":{"dec":52.5, "ra":12,   "S600":  37, "alpha":-0.08, "confN": 2},
-             "3C58": {"dec":64.8, "ra":14,   "S600":  31, "alpha":+0.11, "confN": 2},
-             "3C147":{"dec":49.9, "ra":16,   "S600":  29, "alpha":+0.77, "confN": 2},
-             "3C111":{"dec":38.0, "ra":18,   "S600":  29, "alpha":-0.75, "confN": 2},
-             "3C196":{"dec":48.2, "ra":20,   "S600":  28, "alpha":-0.68, "confN": 2},
-             "3C409":{"dec":23.6, "ra":22,   "S600":  27, "alpha":-0.78, "confN": 3},
-             "3C48": {"dec":33.2, "ra":23,   "S600":  25, "alpha":-0.07, "confN": 3},
-             "3C286":{"dec":30.5, "ra":23.5, "S600":  18, "alpha":-0.19, "confN": 4}
+CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible values not in direct tension with [https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8](https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8)
+             "CasA": {"dec":58.8, "ra":23.3900, "S600":2375, "alpha":-2,    "confN": 0.03},
+             "TauA": {"dec":22.0, "ra":5.5755,  "S600":1142, "alpha":-0.3,  "confN": 0.06},
+             "PerB": {"dec":29.7, "ra":4.6180,  "S600":  87, "alpha":-1.3,  "confN": 0.8}, # [https://arxiv.org/html/2603.23587v1#S5](https://arxiv.org/html/2603.23587v1#S5)
+             "3C10C":{"dec":64.2, "ra":0.4203,  "S600":  71, "alpha":-0.62, "confN": 7}, # couldn't find an actual source or any references other than the CHIME paper (although I didn't do a full recursive search) so I'm using the 3C10 value as a placeholder
+             "3C84": {"dec":41.5, "ra":3.3300,  "S600":  38, "alpha":-0.93, "confN":10}, # from the 3C catalogue paper
+             "3C295":{"dec":52.5, "ra":14.1889, "S600":  37, "alpha":-0.08, "confN": 2},
+             "3C58": {"dec":64.8, "ra":2.0936,  "S600":  31, "alpha":+0.11, "confN": 2},
+             "3C147":{"dec":49.9, "ra":5.7101,  "S600":  29, "alpha":+0.77, "confN": 2},
+             "3C111":{"dec":38.0, "ra":4.3058,  "S600":  29, "alpha":-0.75, "confN": 2},
+             "3C196":{"dec":48.2, "ra":8.2267,  "S600":  28, "alpha":-0.68, "confN": 2},
+             "3C409":{"dec":23.6, "ra":20.2410, "S600":  27, "alpha":-0.78, "confN": 3},
+             "3C48": {"dec":33.2, "ra":1.6281,  "S600":  25, "alpha":-0.07, "confN": 3},
+             "3C286":{"dec":30.5, "ra":13.5189, "S600":  18, "alpha":-0.19, "confN": 4}
             } # radio point sources from the CHIME 2024 holography paper that could appear at boresight for CHORD
 
 # similar to simulate_sky but just the bright catalogue sources
