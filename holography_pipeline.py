@@ -222,20 +222,23 @@ def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt)
     return N2_filtered
 
 
-assert 1==0
-if __name__=="main":
-    t0=time.time()
-    vis_fftvis_cpu=simulate_visibilities(simulator="fftvis",
-                                         fftvis_backend="cpu")
-    t1=time.time()
-    print("fftvis CPU simulation took {} s".format(t1-t0))
-    np.savez("fftvis_cpu_PF_holog.npz",vis_fftvis_cpu)
-    vis_fftvis_gpu=simulate_visibilities(simulator="fftvis",
-                                         fftvis_backend="gpu")
-    t2=time.time()
-    print("fftvis GPU simulation took {} s".format(t2-t1))
-    np.savez("fftvis_gpu_PF_holog.npz",vis_fftvis_gpu)
-    vis_matvis=    simulate_visibilities(simulator="matvis")
-    t3=time.time()
-    print("matvis simulation took {} s".format(t3-t2))
-    np.savez("matvis_PF_holog.npz",vis_matvis)
+
+
+
+
+
+t0=time.time()
+vis_fftvis_cpu=simulate_visibilities(simulator="fftvis",
+                                        fftvis_backend="cpu")
+t1=time.time()
+print("fftvis CPU simulation took {} s".format(t1-t0))
+np.savez("fftvis_cpu_PF_holog.npz",vis_fftvis_cpu)
+vis_fftvis_gpu=simulate_visibilities(simulator="fftvis",
+                                        fftvis_backend="gpu")
+t2=time.time()
+print("fftvis GPU simulation took {} s".format(t2-t1))
+np.savez("fftvis_gpu_PF_holog.npz",vis_fftvis_gpu)
+vis_matvis=    simulate_visibilities(simulator="matvis")
+t3=time.time()
+print("matvis simulation took {} s".format(t3-t2))
+np.savez("matvis_PF_holog.npz",vis_matvis)
