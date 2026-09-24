@@ -48,8 +48,8 @@ CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "con
             } # radio point sources from the CHIME 2024 holography paper that could appear at boresight for CHORD
 
 # similar to simulate_sky but just the bright catalogue sources
-CHIME_RA=np.asarray([elem["ra"] for elem in CHIME_match.values()])
-CHIME_DEC=np.asarray([elem["dec"] for elem in CHIME_match.values()])
+CHIME_RA=np.asarray([elem["ra"]*(np.pi/12) for elem in CHIME_match.values()]) # hrs to rad: 360/24 * pi/180 = pi/24 * 2 = pi/12
+CHIME_DEC=np.asarray([elem["dec"]*np.pi/180 for elem in CHIME_match.values()]) # deg to rad
 CHIME_ALPHAS=np.asarray([elem["alpha"] for elem in CHIME_match.values()])
 CHIME_S600=np.asarray([elem["S600"] for elem in CHIME_match.values()])
 CHIME_FLUX_ALLFREQ=((FREQS[:, np.newaxis] / FREQS[0]) ** CHIME_ALPHAS.T * CHIME_S600.T).T
