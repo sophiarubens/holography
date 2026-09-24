@@ -224,7 +224,7 @@ def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt)
 
 sample_HERA_format=coord_arrays_to_HERA_format(E_unitless,N_unitless)
 print("sample_HERA_format.keys() =",sample_HERA_format.keys())
-print('sample_HERA_format["0"].shape =',sample_HERA_format["0"].shape)
+# print('sample_HERA_format["0"].shape =',sample_HERA_format["0"].shape)
 
 
 # assert 1==0
