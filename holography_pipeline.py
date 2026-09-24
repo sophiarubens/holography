@@ -6,7 +6,7 @@ from astropy.time import Time
 from astropy.units import Quantity
 from astropy import units as u
 
-import fftvis
+# import fftvis
 import matvis
 
 import healpy as hp
@@ -48,10 +48,10 @@ CHIME_match={"CygA": {"dec":40.7, "ra":0,    "S600":3613, "alpha":-0.82, "confN"
             } # radio point sources from the CHIME 2024 holography paper that could appear at boresight for CHORD
 
 # similar to simulate_sky but just the bright catalogue sources
-CHIME_RA=[elem.ra for elem in CHIME_match.values()]
-CHIME_DEC=[elem.dec for elem in CHIME_match.values()]
-CHIME_ALPHAS=[elem.alpha for elem in CHIME_match.values()]
-CHIME_S600=[elem.S600 for elem in CHIME_match.values()]
+CHIME_RA=np.asarray([elem["ra"] for elem in CHIME_match.values()])
+CHIME_DEC=np.asarray([elem["dec"] for elem in CHIME_match.values()])
+CHIME_ALPHAS=np.asarray([elem["alpha"] for elem in CHIME_match.values()])
+CHIME_S600=np.asarray([elem["S600"] for elem in CHIME_match.values()])
 CHIME_FLUX_ALLFREQ=((FREQS[:, np.newaxis] / FREQS[0]) ** CHIME_ALPHAS.T * CHIME_S600.T).T
 
 # CHORD layout
@@ -59,30 +59,56 @@ CHORD_NS_bl=8.5*u.m
 CHORD_EW_bl=6.3*u.m
 CHORD_N_NS=24
 CHORD_N_EW=22
+half_NS=CHORD_N_NS//2
+half_EW=CHORD_N_EW//2
 
-CHORD_NS_vec=CHORD_NS_bl*fftfreq(fftshift(CHORD_N_NS))
-CHORD_EW_vec=CHORD_EW_bl*fftfreq(fftshift(CHORD_N_EW))
-CHORD_EW_coords,CHORD_NS_coords=np.meshgrid(CHORD_EW_vec,CHORD_NS_vec,indexing="ij")
-Galt_EW=CHORD_EW_vec[-1,-1]+116*u.m
-Galt_NS=CHORD_NS_vec[-1,-1]+  6*u.m
-print("CHORD_EW_coords.shape=",CHORD_EW_coords.shape)
+CHORD_NS_vec=CHORD_NS_bl*CHORD_N_NS*fftshift(fftfreq(CHORD_N_NS))
+CHORD_EW_vec=CHORD_EW_bl*CHORD_N_EW*fftshift(fftfreq(CHORD_N_EW))
+CHORD_EW_coords,CHORD_NS_coords=np.meshgrid(CHORD_EW_vec,CHORD_NS_vec)
+Galt_EW=CHORD_EW_coords[half_EW,half_NS]+116*u.m # prints out an astropy value
+Galt_NS=CHORD_NS_coords[half_EW,half_NS]+  6*u.m
 CHORD_ant_mask=np.ones((24,22),dtype="bool")
-CHORD_ant_mask[   0 ,   0  ]=False # NW corner observatory access road gap
-CHORD_ant_mask[   6 ,  10  ]=False # N receiver hut
-CHORD_ant_mask[  17 ,  10  ]=False # S receiver hut
-CHORD_ant_mask[ - 6:, - 2: ]=False # SE corner too steep for antennas
-CHORD_ant_mask[  17 , - 1  ]=False # extra antenna missing from SE corner
+CHORD_ant_mask[ -  1 ,   0  ]=False # NW corner observatory access road gap
+CHORD_ant_mask[    6 ,  10  ]=False # N receiver hut
+CHORD_ant_mask[   17 ,  10  ]=False # S receiver hut
+CHORD_ant_mask[ :  6 , - 2: ]=False # SE corner too steep for antennas
+CHORD_ant_mask[    6 , - 1  ]=False # extra antenna missing from SE corner
+
 CHORD_EW=CHORD_EW_coords[CHORD_ant_mask]
 CHORD_NS=CHORD_NS_coords[CHORD_ant_mask]
-holog_EW=CHORD_EW.append(Galt_EW) # should be a list by now
-holog_NS=CHORD_NS.append(Galt_NS)
+CHORD_EW=list(CHORD_EW)
+CHORD_NS=list(CHORD_NS)
+holog_EW=CHORD_EW +[Galt_EW] # should be a list by now
+holog_NS=CHORD_NS +[Galt_NS]
+
+holog_EW_unitless=[ew.value for ew in holog_EW]
+holog_NS_unitless=[ns.value for ns in holog_NS]
+EN_unitless = np.vstack((holog_EW_unitless, holog_NS_unitless)).T
+
+orientation=-1.75*np.pi/180
+rot_mat= np.asarray([[np.cos(orientation),-np.sin(orientation)], 
+                     [np.sin(orientation), np.cos(orientation)]])
+EN_unitless = np.dot(EN_unitless, rot_mat.T)
+print("EN_unitless.shape =",EN_unitless.shape)
+E_unitless,N_unitless=EN_unitless.T
+
+holog_EW=list(E_unitless*u.m) # re-formed, now rotated
+holog_NS=list(N_unitless*u.m)
+
+plt.figure()
+plt.scatter(E_unitless,N_unitless)
+plt.title("holog coordinates")
+plt.savefig("holog_coords.png")
+plt.close()
+
 # clicking 116 m east, 6 m north
 
-Nmini=2
-mini_array_EW, mini_array_NS = np.meshgrid(CHORD_NS_bl*fftshift(fftfreq(Nmini)),
-                                           CHORD_EW_bl*fftshift(fftfreq(Nmini)), indexing="ij")
-holog_mini_EW=list(np.reshape(mini_array_EW,Nmini**2)).append(Galt_EW)
-holog_mini_NS=list(np.reshape(mini_array_NS,Nmini**2)).append(Galt_NS)
+N_PF_EW=7
+N_PF_NS=10
+PF_array_EW, PF_array_NS = np.meshgrid(CHORD_NS_bl*fftshift(fftfreq(N_PF_NS)),
+                                       CHORD_EW_bl*fftshift(fftfreq(N_PF_EW)), indexing="ij")
+holog_PF_EW=list(np.reshape(PF_array_EW,N_PF_EW*N_PF_NS)).append(Galt_EW)
+holog_PF_NS=list(np.reshape(PF_array_NS,N_PF_EW*N_PF_NS)).append(Galt_NS)
 
 def coord_arrays_to_HERA_format(x_arr,y_arr,z_arr=None,antenna_mask=None):
     if z_arr is None:               # fallback: flat array
@@ -136,7 +162,7 @@ def simulate_sky(Nside=64,
     
 def simulate_visibilities(simulator="fftvis",
                           fftvis_backend="cpu",
-                          antpos=coord_arrays_to_HERA_format(holog_mini_EW,holog_mini_NS),
+                          antpos=coord_arrays_to_HERA_format(holog_PF_EW,holog_PF_NS),
                           beam=AiryBeam(diameter=6.0),
                           freqs=np.linspace(300e6,1500e6,NFREQS),
                           times=TIMES,
@@ -193,19 +219,21 @@ def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt)
     N2_filtered= np.take_along_axis(N2temp, CHORD_Galt_baselines, axis=-1)# original axis -2 is current axis -1
     return N2_filtered
 
+
+assert 1==0
 if __name__=="main":
     t0=time.time()
     vis_fftvis_cpu=simulate_visibilities(simulator="fftvis",
                                          fftvis_backend="cpu")
     t1=time.time()
     print("fftvis CPU simulation took {} s".format(t1-t0))
-    np.savez("fftvis_cpu_mini_holog.npz",vis_fftvis_cpu)
+    np.savez("fftvis_cpu_PF_holog.npz",vis_fftvis_cpu)
     vis_fftvis_gpu=simulate_visibilities(simulator="fftvis",
                                          fftvis_backend="gpu")
     t2=time.time()
     print("fftvis GPU simulation took {} s".format(t2-t1))
-    np.savez("fftvis_gpu_mini_holog.npz",vis_fftvis_gpu)
+    np.savez("fftvis_gpu_PF_holog.npz",vis_fftvis_gpu)
     vis_matvis=    simulate_visibilities(simulator="matvis")
     t3=time.time()
     print("matvis simulation took {} s".format(t3-t2))
-    np.savez("matvis_mini_holog.npz",vis_matvis)
+    np.savez("matvis_PF_holog.npz",vis_matvis)
