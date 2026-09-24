@@ -161,7 +161,7 @@ def simulate_sky(Nside=64,
     return [ra,dec],spectra
     
 def simulate_visibilities(simulator="fftvis",
-                          fftvis_backend="cpu",
+                          matvis_backend="cpu",
                           antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
                           beam=AiryBeam(diameter=6.0),
                           freqs=np.linspace(300e6,1500e6,NFREQS),
@@ -182,7 +182,7 @@ def simulate_visibilities(simulator="fftvis",
                                           precision=2,
                                           nprocesses=1,
                                           baselines=baselines,
-                                          backend=fftvis_backend  # Explicitly specify the backend (new parameter)
+                                          backend=matvis_backend  # Explicitly specify the backend (new parameter)
                                         ) # cf. https://github.com/tyler-a-cox/fftvis/blob/main/docs/tutorials/fftvis_tutorial.ipynb
     elif simulator=="matvis":
         leading_order_beams=[AiryBeam(diameter=6.0),AiryBeam(diameter=26.0)]
@@ -201,7 +201,7 @@ def simulate_visibilities(simulator="fftvis",
                                           precision=2, # single/double precision, i.e. 32- vs. 64-bit floats
                                           # nprocesses=, # I'm pretty sure this only figures into the fftvis algorithm
                                           # baselines=,
-                                          # backend= # I'm pretty sure this only figures into the fftvis algorithm
+                                          backend=matvis_backend # I'm pretty sure this only figures into the fftvis algorithm
                                         ) # cf. https://matvis.readthedocs.io/en/latest/tutorials/matvis_tutorial.html
     else:
         raise ValueError("Unknown drift-scan visibility simulator. Try fftvis or matvis")
@@ -229,17 +229,20 @@ print("sample_HERA_format.keys() =",sample_HERA_format.keys())
 
 # assert 1==0
 t0=time.time()
-vis_fftvis_cpu=simulate_visibilities(simulator="fftvis",
-                                        fftvis_backend="cpu")
+# already got this from job 61349959
+# vis_fftvis_cpu=simulate_visibilities(simulator="fftvis")
 t1=time.time()
-print("fftvis CPU simulation took {} s".format(t1-t0))
-np.savez("fftvis_cpu_PF_holog.npz",vis_fftvis_cpu)
-vis_fftvis_gpu=simulate_visibilities(simulator="fftvis",
-                                        fftvis_backend="gpu")
+# print("fftvis CPU simulation took {} s".format(t1-t0))
+# np.savez("fftvis_cpu_holog.npz",vis_fftvis_cpu)
+
+vis_matvis_cpu=simulate_visibilities(simulator="matvis",
+                                     matvis_backend="cpu")
 t2=time.time()
-print("fftvis GPU simulation took {} s".format(t2-t1))
-np.savez("fftvis_gpu_PF_holog.npz",vis_fftvis_gpu)
-vis_matvis=    simulate_visibilities(simulator="matvis")
+print("fftvis CPU simulation took {} s".format(t2-t1))
+np.savez("matvis_cpu_holog.npz",vis_matvis_cpu)
+
+vis_matvis_gpu=    simulate_visibilities(simulator="matvis",
+                                         matvis_backend="gpu")
 t3=time.time()
 print("matvis simulation took {} s".format(t3-t2))
-np.savez("matvis_PF_holog.npz",vis_matvis)
+np.savez("matvis_gpu_holog.npz",vis_matvis_gpu)
