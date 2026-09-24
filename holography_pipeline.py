@@ -10,10 +10,9 @@ import fftvis
 import matvis
 
 import healpy as hp
-
 from pyuvdata.analytic_beam import AiryBeam,GaussianBeam #,UniformBeam
-
 from scipy.fft import fftfreq,fftshift
+import time
 
 NFREQS=20
 FREQS=np.linspace(590,610,NFREQS)*u.MHz
@@ -136,28 +135,28 @@ def simulate_sky(Nside=64,
     return [ra,dec],spectra
     
 def simulate_visibilities(simulator="fftvis",
+                          fftvis_backend="cpu",
                           antpos=coord_arrays_to_HERA_format(holog_mini_EW,holog_mini_NS),
                           beam=AiryBeam(diameter=6.0),
-                          Nfreqs=NFREQS,
                           freqs=np.linspace(300e6,1500e6,NFREQS),
-                          Ntimes=NTIMES,
                           times=TIMES,
                           telescope_loc=DRAO):
     if simulator=="fftvis":
+        baselines=baselines = [(i, j) for i in range(len(antpos)) for j in range(len(antpos))]
         visibilities=fftvis.simulate_vis(
                                           ants=antpos,
                                           fluxes=CHIME_FLUX_ALLFREQ,
                                           ra=CHIME_RA,
                                           dec=CHIME_DEC,
-                                          freqs=FREQS,
-                                          times=TIMES.jd,
+                                          freqs=freqs,
+                                          times=times.jd,
                                           telescope_loc=telescope_loc,
                                           beam=beam,
                                           polarized=False,
                                           precision=2,
                                           nprocesses=1,
                                           baselines=baselines,
-                                          backend="cpu"  # Explicitly specify the backend (new parameter)
+                                          backend=fftvis_backend  # Explicitly specify the backend (new parameter)
                                         ) # cf. https://github.com/tyler-a-cox/fftvis/blob/main/docs/tutorials/fftvis_tutorial.ipynb
     elif simulator=="matvis":
         rng=np.random.default_rng()
@@ -166,8 +165,8 @@ def simulate_visibilities(simulator="fftvis",
                                           fluxes=CHIME_FLUX_ALLFREQ,
                                           ra=CHIME_RA,
                                           dec=CHIME_DEC,
-                                          freqs=FREQS,
-                                          times=TIMES.jd,
+                                          freqs=freqs,
+                                          times=times.jd,
                                           telescope_loc=telescope_loc,
                                           beams=[GaussianBeam(sigma=0.5),GaussianBeam(sigma=0.51)], beam_idx=rng.randint(len(antpos)),
                                           polarized=False,
@@ -178,7 +177,7 @@ def simulate_visibilities(simulator="fftvis",
                                         ) # cf. https://matvis.readthedocs.io/en/latest/tutorials/matvis_tutorial.html
     else:
         raise ValueError("Unknown drift-scan visibility simulator. Try fftvis or matvis")
-    return None
+    return visibilities
 
 def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt):
     freq_axis=0 # I dunno if these will come in handy
@@ -193,3 +192,20 @@ def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt)
     N2temp=      np.take_along_axis(N2,     CHORD_Galt_baselines, axis=-1)
     N2_filtered= np.take_along_axis(N2temp, CHORD_Galt_baselines, axis=-1)# original axis -2 is current axis -1
     return N2_filtered
+
+if __name__=="main":
+    t0=time.time()
+    vis_fftvis_cpu=simulate_visibilities(simulator="fftvis",
+                                         fftvis_backend="cpu")
+    t1=time.time()
+    print("fftvis CPU simulation took {} s".format(t1-t0))
+    np.savez("fftvis_cpu_mini_holog.npz",vis_fftvis_cpu)
+    vis_fftvis_gpu=simulate_visibilities(simulator="fftvis",
+                                         fftvis_backend="gpu")
+    t2=time.time()
+    print("fftvis GPU simulation took {} s".format(t2-t1))
+    np.savez("fftvis_gpu_mini_holog.npz",vis_fftvis_gpu)
+    vis_matvis=    simulate_visibilities(simulator="matvis")
+    t3=time.time()
+    print("matvis simulation took {} s".format(t3-t2))
+    np.savez("matvis_mini_holog.npz",vis_matvis)
