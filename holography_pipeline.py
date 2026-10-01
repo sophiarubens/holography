@@ -9,10 +9,14 @@ from astropy import units as u
 import matvis
 
 import healpy as hp
-from pyuvdata.analytic_beam import AiryBeam,GaussianBeam #,UniformBeam
+from pyuvdata.analytic_beam import AiryBeam
+from pyuvdata import BeamInterface
 from scipy.fft import fftfreq,fftshift
+from scipy.stats import binned_statistic_2d
 import time
+import cmasher
 
+# TODO: generalize to more realistic values, chunk up the band with different Nsides, etc. 
 NFREQS=20
 FREQS=np.linspace(590,610,NFREQS)*u.MHz
 NTIMES=30
@@ -21,9 +25,21 @@ JD1=JD0+0.05
 time_vec=np.linspace(JD0, JD1, NTIMES)
 TIMES=Time(time_vec, format="jd", scale="utc") 
 DRAO=EarthLocation.of_site("drao") # coordinates in the astropy database are for Galt, but this is convenient and good enough for now
+print(DRAO)
+omega_e=np.pi/12 # 2pi rad / 24 hr = pi/12
 
 # polarized visibility matrices are indexed as (N freqs, N times, N feed i, N feed j, N baselines)
 # unpolarized visibility matrices are indexed as (N freqs, N times, N antennas, N antennas) *IMPORTANT* AnalyticBeam objects don't support polarization
+
+def fringe_rate(H=12*u.hr, delta=0*u.hr,   # source hr angle and dec (defaults to zenith for drift-scan)
+                h=0*u.hr, d=49*u.deg,      # baseline-at-current-pointing hr angle and dec
+                D=100*u.m,                 # baseline length
+                lambdaobs=600*u.MHz,       # obs freq
+                f_r_instr=0                # instrumental clock contrib to fringe rate
+                ):
+    D_lambda=D/lambdaobs
+    f_r=-omega_e*D_lambda*np.cos(d)*np.cos(delta)*np.sin(H-h)+f_r_instr
+    return f_r.decompose()
 
 
 def coord_arrays_to_HERA_format(x_arr,y_arr,z_arr=None,antenna_mask=None):
@@ -76,10 +92,8 @@ def simulate_sky(Nside=64,
 
     return [ra,dec],spectra
     
-def simulate_visibilities(simulator="fftvis",
-                          matvis_backend="cpu",
+def simulate_visibilities(matvis_backend="cpu",
                           antpos=None,
-                          beam=AiryBeam(diameter=6.0),
                           freqs=np.linspace(300e6,1500e6,NFREQS),
                           times=TIMES,
                           telescope_loc=DRAO):
@@ -87,61 +101,79 @@ def simulate_visibilities(simulator="fftvis",
     antenna_diameter_indices=np.zeros(len(antpos),dtype=int)
     antenna_diameter_indices[-1]=int(1)
     use_gpu=True if matvis_backend=="gpu" else False
-    visibilities=matvis.simulate_vis(
-                                        ants=antpos,
-                                        fluxes=CHIME_FLUX_ALLFREQ,
-                                        ra=CHIME_RA,
-                                        dec=CHIME_DEC,
-                                        freqs=freqs,
-                                        times=times,
-                                        telescope_loc=telescope_loc,
-                                        beams=leading_order_beams, beam_idx=antenna_diameter_indices,
-                                        polarized=False,
-                                        precision=2, # single/double precision, i.e. 32- vs. 64-bit floats
-                                        # nprocesses=, # I'm pretty sure this only figures into the fftvis algorithm
-                                        # baselines=,
-                                        use_gpu=use_gpu
+    visibilities=matvis.simulate_vis(ants=antpos,
+                                    fluxes=CHIME_FLUX_ALLFREQ,
+                                    ra=CHIME_RA,
+                                    dec=CHIME_DEC,
+                                    freqs=freqs,
+                                    times=times,
+                                    telescope_loc=telescope_loc,
+                                    beams=leading_order_beams, beam_idx=antenna_diameter_indices,
+                                    polarized=False,
+                                    precision=2, # single/double precision, i.e. 32- vs. 64-bit floats
+                                    # nprocesses=, # I'm pretty sure this only figures into the fftvis algorithm                                        # baselines=,
+                                    use_gpu=use_gpu
                                     ) # cf. https://matvis.readthedocs.io/en/latest/tutorials/matvis_tutorial.html
     return visibilities
 
 def manually_track_with_Galt(matvis_backend="cpu",
                              antpos=None,
-                             beam=AiryBeam(diameter=6.0),
                              freqs=np.linspace(300e6,1500e6,NFREQS),
-                             time_vec=time_vec,
-                             telescope_loc=DRAO):
+                             leading_order_beams=None, antenna_diameter_indices=None,
+                             time_vec=TIMES,
+                             telescope_loc=DRAO,
+                             Nside=64):
     Nant=len(antpos)
     Ntime=len(time_vec)
     Nfreq=len(freqs) # might not be NFREQS in the case of having overwritten the keyword fallback
-    Galt_tracked_visibilities=np.zeros((Nfreq,Ntime,Nant,Nant))
-    for i,time in enumerate(time_vec):
+    Galt_tracked_visibilities=np.zeros((Nfreq,Ntime,Nant**2),dtype=np.complex128)
+    # TODO: make this safe for cases where Galt is not necessarily the last beam type in the list? could be, but not a priority... this is just the way I'm simulating things
+
+    if leading_order_beams is None:
+        leading_order_beams=[AiryBeam(diameter=6.),AiryBeam(diameter=26.)]
+        antenna_diameter_indices=np.zeros(Nant,dtype=int)
+        antenna_diameter_indices[-1]=int(1)
+        CHORDbeam_idx,Galtbeam_idx=np.meshgrid(antenna_diameter_indices,antenna_diameter_indices,
+                                               indexing="ij")
+        heterogeneous_baseline_extraction_mask=CHORDbeam_idx+Galtbeam_idx # the entries with values of 1 are the baselines to extract (0 = two CHORD beams; 2 = two Galt beams)
+    CHORD_beam,Galt_beam=leading_order_beams
+    interface=BeamInterface(Galt_beam, beam_type="efield")
+    az_vec=np.linspace(0,np.pi/2, Nside) # rad
+    za_vec=np.linspace(0,2*np.pi, Nside) # rad
+    # sure, this is embarrassingly parallel, but the first thing is to get the flow of eval ironed out, even if that means using a painfully inefficient loop
+    print("time vec entry 0---is it still astropy-dimensionful?",time_vec[0])
+    for i in range(Ntime):
+        repointed_Galt_beam=interface.compute_response(az_array=az_vec,
+                                                       za_array=za_vec,
+                                                       freq_array=freqs,
+                                                       az_za_grid=True,
+                                                       freq_interp_kind="cubic", # this *is* the default, but it's a useful reminder in case I need to turn it up later
+                                                       # interpolation_function and other kwargs are useless here because I am using AnalyticBeams, not UVBeams
+                                                       )
+        # literal 0th-order TODO: think about why that is probably wrong because Galt is EQUATORIALLY MOUNTED
+        leading_order_beams=[CHORD_beam,repointed_Galt_beam]
+
         vis_i=simulate_visibilities(matvis_backend=matvis_backend,
                                     antpos=antpos,
-                                    beam=beam,
+                                    # TODO: propagate the beam type indices out to this level of wrapper to make the implementation less brittle (although this is, indeed, )
                                     freqs=freqs,
-                                    times=time,
+                                    times=time_vec[i:i+1], # have to explicitly array-dimensionalize this so matvis doesn't freeze up
                                     telescope_loc=telescope_loc)
-        Galt_tracked_visibilities[:,i,:,:]=vis_i 
+        vis_i=vis_i[:,0,:] # make the (Nfreq, 1, Nbaselines) slice (Nfreq, Nbaselines)-shaped
+        Galt_tracked_visibilities[:,i,:]=vis_i 
 
-def extract_CHORD_x_Galt(N2:np.ndarray,baselines_with_CHORD,baselines_with_Galt):
-    freq_axis=0 # I dunno if these will come in handy
-    time_axis=1
-    N2_ndim=N2.ndim # number of dimensions in the visibility matrix
-    if N2_ndim==6: # Nfreq, Ntime, Nfeed, Nfeed, Nant, Nant
-        feed_axes=[2,3]
-    elif N2_ndim!=4: # Nfreq, Ntime, Nant, Nant
-        raise TypeError("shape of visibility matrix is consistent with neither polarized nor unpolarized visibilities")
+    # TODO: do not assume that the baseline ordering will always follow C-like ordering (either verify that or generalize this)
+    heterogeneous_baseline_extraction_mask_flattened=np.reshape(heterogeneous_baseline_extraction_mask,ordering="C")
+    tracked_vis_heterogeneous_only=Galt_tracked_visibilities(np.nonzero(heterogeneous_baseline_extraction_mask_flattened)==1,axis=2) # keep all freqs, all times but only the baselines of interest
+    
+    return Galt_tracked_visibilities,tracked_vis_heterogeneous_only
 
-    CHORD_Galt_baselines=np.nonzero(baselines_with_CHORD & baselines_with_Galt)
-    N2temp=      np.take_along_axis(N2,     CHORD_Galt_baselines, axis=-1)
-    N2_filtered= np.take_along_axis(N2temp, CHORD_Galt_baselines, axis=-1)# original axis -2 is current axis -1
-    return N2_filtered
-
-CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible values not in direct tension with [https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8](https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8)
+# TODO: more rigorous fact-checking of the first references I found for these values
+CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible based on https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8
              "CasA": {"dec":58.8, "ra":23.3900, "S600":2375, "alpha":-2,    "confN": 0.03},
              "TauA": {"dec":22.0, "ra":5.5755,  "S600":1142, "alpha":-0.3,  "confN": 0.06},
-             "PerB": {"dec":29.7, "ra":4.6180,  "S600":  87, "alpha":-1.3,  "confN": 0.8}, # [https://arxiv.org/html/2603.23587v1#S5](https://arxiv.org/html/2603.23587v1#S5)
-             "3C10C":{"dec":64.2, "ra":0.4203,  "S600":  71, "alpha":-0.62, "confN": 7}, # couldn't find an actual source or any references other than the CHIME paper (although I didn't do a full recursive search) so I'm using the 3C10 value as a placeholder
+             "PerB": {"dec":29.7, "ra":4.6180,  "S600":  87, "alpha":-1.3,  "confN": 0.8}, # https://arxiv.org/html/2603.23587v1#S5
+             "3C10C":{"dec":64.2, "ra":0.4203,  "S600":  71, "alpha":-0.62, "confN": 7}, # unclear what they meant by this -> currently using 3C10 value as placeholder
              "3C84": {"dec":41.5, "ra":3.3300,  "S600":  38, "alpha":-0.93, "confN":10}, # from the 3C catalogue paper
              "3C295":{"dec":52.5, "ra":14.1889, "S600":  37, "alpha":-0.08, "confN": 2},
              "3C58": {"dec":64.8, "ra":2.0936,  "S600":  31, "alpha":+0.11, "confN": 2},
@@ -153,12 +185,46 @@ CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "con
              "3C286":{"dec":30.5, "ra":13.5189, "S600":  18, "alpha":-0.19, "confN": 4}
             } # radio point sources from the CHIME 2024 holography paper that could appear at boresight for CHORD
 
+# TODO: stop doing hacky outside-the-function simulation and actually use my own helper function
 # similar to simulate_sky but just the bright catalogue sources
 CHIME_RA=np.asarray([elem["ra"]*(np.pi/12) for elem in CHIME_match.values()]) # hrs to rad: 360/24 * pi/180 = pi/24 * 2 = pi/12
 CHIME_DEC=np.asarray([elem["dec"]*np.pi/180 for elem in CHIME_match.values()]) # deg to rad
 CHIME_ALPHAS=np.asarray([elem["alpha"] for elem in CHIME_match.values()])
 CHIME_S600=np.asarray([elem["S600"] for elem in CHIME_match.values()])
 CHIME_FLUX_ALLFREQ=((FREQS[:, np.newaxis] / FREQS[0]) ** CHIME_ALPHAS.T * CHIME_S600.T).T
+
+# something I should've tested during the week of Sept 21st but apparently forgor
+print("extrema of RAs: ",np.min(CHIME_RA),np.max(CHIME_RA))
+print("extrema of decs: ",np.min(CHIME_DEC),np.max(CHIME_DEC))
+
+res= binned_statistic_2d(CHIME_RA, CHIME_DEC, CHIME_S600, # bins=Nside**2, 
+                         bins=[500,500],
+                         range=[[0,2*np.pi], [-np.pi,np.pi]]) # dec and RA both in rad
+histogram_of_simulated_point_sources=res.statistic
+histogram_of_simulated_point_sources[np.isnan(histogram_of_simulated_point_sources)]=0
+print("extrema of histogram: ",np.min(histogram_of_simulated_point_sources),np.max(histogram_of_simulated_point_sources))
+
+print("histogram_of_simulated_point_sources.shape=",histogram_of_simulated_point_sources.shape)
+
+# plot the sky map
+plt.figure()
+# plt.subplot(projection="mollweide")
+plt.imshow(histogram_of_simulated_point_sources.T, 
+           norm="symlog",
+           extent=[0,2*np.pi,-np.pi,np.pi],
+           origin="lower",
+           cmap=cmasher.torch)
+plt.axhline(19*np.pi/180,c="w")
+plt.axhline(79*np.pi/180,c="w")
+cbar=plt.colorbar()
+cbar.set_label("brightness (Jy)")
+plt.xlabel("RA (rad)")
+plt.ylabel("dec (rad)")
+# plt.xlim(-90,90)
+# plt.ylim(0,24)
+plt.title("simulated sky")
+plt.savefig("simulated_sky.png",dpi=500)
+plt.close()
 
 # CHORD layout
 CHORD_NS_bl=8.5*u.m
@@ -208,15 +274,24 @@ plt.savefig("holog_coords.png")
 plt.close()
 
 
-# assert 1==0
-t1=time.time()
-vis_matvis_cpu=simulate_visibilities(simulator="matvis",
-                                     antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
-                                     matvis_backend="cpu")
-t2=time.time()
-print("fftvis CPU simulation took {} s".format(t2-t1))
-np.savez("matvis_cpu_holog.npz",vis_matvis_cpu)
+# experiments from the week of Sept 21st
+# t1=time.time()
+# vis_matvis_cpu=simulate_visibilities(simulator="matvis",
+#                                      antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
+#                                      matvis_backend="cpu")
+# t2=time.time()
+# print("fftvis CPU simulation took {} s".format(t2-t1))
+# np.savez("matvis_cpu_holog.npz",vis_matvis_cpu)
 
+# experiments from the week of Sept 28th
+t1=time.time()
+CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless))
+t2=time.time()
+print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s".format(t2-t1))
+np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
+np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz")
+
+# not tested during the week of Sept 21st
 assert(1==0)
 vis_matvis_gpu=    simulate_visibilities(simulator="matvis",
                                          antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
