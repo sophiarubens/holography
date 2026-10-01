@@ -163,8 +163,8 @@ def manually_track_with_Galt(matvis_backend="cpu",
         Galt_tracked_visibilities[:,i,:]=vis_i 
 
     # TODO: do not assume that the baseline ordering will always follow C-like ordering (either verify that or generalize this)
-    heterogeneous_baseline_extraction_mask_flattened=np.reshape(heterogeneous_baseline_extraction_mask,ordering="C")
-    tracked_vis_heterogeneous_only=Galt_tracked_visibilities(np.nonzero(heterogeneous_baseline_extraction_mask_flattened)==1,axis=2) # keep all freqs, all times but only the baselines of interest
+    heterogeneous_baseline_extraction_mask_flattened=np.reshape(heterogeneous_baseline_extraction_mask,(Nant**2,),order="C")
+    tracked_vis_heterogeneous_only=Galt_tracked_visibilities[np.nonzero(heterogeneous_baseline_extraction_mask_flattened==1,axis=2)] # keep all freqs, all times but only the baselines of interest
     
     return Galt_tracked_visibilities,tracked_vis_heterogeneous_only
 
@@ -291,11 +291,4 @@ print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s"
 np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
 np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz")
 
-# not tested during the week of Sept 21st
-assert(1==0)
-vis_matvis_gpu=    simulate_visibilities(simulator="matvis",
-                                         antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
-                                         matvis_backend="gpu")
-t3=time.time()
-print("matvis simulation took {} s".format(t3-t2))
-np.savez("matvis_gpu_holog.npz",vis_matvis_gpu)
+# TODO: run matvis GPU backend on Fir OR find the backdoor to use multiple beam types with fftvis
