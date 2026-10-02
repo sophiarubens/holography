@@ -17,9 +17,10 @@ import time
 import cmasher
 
 # TODO: generalize to more realistic values, chunk up the band with different Nsides, etc. 
-NFREQS=20
-FREQS=np.linspace(590,610,NFREQS)*u.MHz
-NTIMES=30
+NFREQS=100
+GLOBAL_NSIDE=512
+FREQS=np.linspace(300,600,NFREQS)*u.MHz
+NTIMES=100
 JD0=2461274
 JD1=JD0+0.05
 time_vec=np.linspace(JD0, JD1, NTIMES)
@@ -29,16 +30,24 @@ print(DRAO)
 omega_e=np.pi/12 # 2pi rad / 24 hr = pi/12
 
 # polarized visibility matrices are indexed as (N freqs, N times, N feed i, N feed j, N baselines)
-# unpolarized visibility matrices are indexed as (N freqs, N times, N antennas, N antennas) *IMPORTANT* AnalyticBeam objects don't support polarization
+# unpolarized visibility matrices are indexed as (N freqs, N times, N antennas, N antennas) 
+#    AnalyticBeam objects don't support polarization
+#    in practice, the returned visibilities are actually (N freqs, N times, N baselines)
 
-def fringe_rate(H=12*u.hr, delta=0*u.hr,   # source hr angle and dec (defaults to zenith for drift-scan)
-                h=0*u.hr, d=49*u.deg,      # baseline-at-current-pointing hr angle and dec
-                D=100*u.m,                 # baseline length
-                lambdaobs=600*u.MHz,       # obs freq
-                f_r_instr=0                # instrumental clock contrib to fringe rate
+def fringe_rate(H=12*u.hourangle, delta=0*u.hourangle, # source hr angle and dec (defaults to zenith for drift-scan)
+                h=0*u.hourangle, d=49*u.deg,           # baseline-at-current-pointing hr angle and dec
+                D=100*u.m,                             # baseline length
+                obsfreq=600*u.MHz,                     # obs freq (default = 600 MHz)
+                f_r_instr=0                            # instrumental clock contrib to fringe rate
                 ):
+    lambdaobs=3e8*u.m/u.s/obsfreq
     D_lambda=D/lambdaobs
-    f_r=-omega_e*D_lambda*np.cos(d)*np.cos(delta)*np.sin(H-h)+f_r_instr
+    print("D_lambda=",D_lambda)
+    f_r=-omega_e*D_lambda\
+        *np.cos(d.to(u.rad))\
+        *np.cos(delta.to(u.rad))\
+        *np.sin((H-h).to(u.rad))\
+        +f_r_instr
     return f_r.decompose()
 
 
@@ -65,7 +74,7 @@ def coord_arrays_to_HERA_format(x_arr,y_arr,z_arr=None,antenna_mask=None):
     coords_HERA_format=dict(enumerate(coords_all))
     return coords_HERA_format 
 
-def simulate_sky(Nside=64,
+def simulate_sky(Nside=GLOBAL_NSIDE,
                  freqs=FREQS,
                  mode="CHIME_match"):
     Npix=hp.nside2npix(Nside)
@@ -122,7 +131,7 @@ def manually_track_with_Galt(matvis_backend="cpu",
                              leading_order_beams=None, antenna_diameter_indices=None,
                              time_vec=TIMES,
                              telescope_loc=DRAO,
-                             Nside=64):
+                             Nside=GLOBAL_NSIDE):
     Nant=len(antpos)
     Ntime=len(time_vec)
     Nfreq=len(freqs) # might not be NFREQS in the case of having overwritten the keyword fallback
@@ -130,18 +139,19 @@ def manually_track_with_Galt(matvis_backend="cpu",
     # TODO: make this safe for cases where Galt is not necessarily the last beam type in the list? could be, but not a priority... this is just the way I'm simulating things
 
     if leading_order_beams is None:
+        # TODO: add a new keyword arg so I can adjust the nominal pointing (CHORD ~Cyg A or something and Galt starting at the correct RA/dec for the repointing to be physical)
         leading_order_beams=[AiryBeam(diameter=6.),AiryBeam(diameter=26.)]
         antenna_diameter_indices=np.zeros(Nant,dtype=int)
         antenna_diameter_indices[-1]=int(1)
         CHORDbeam_idx,Galtbeam_idx=np.meshgrid(antenna_diameter_indices,antenna_diameter_indices,
                                                indexing="ij")
-        heterogeneous_baseline_extraction_mask=CHORDbeam_idx+Galtbeam_idx # the entries with values of 1 are the baselines to extract (0 = two CHORD beams; 2 = two Galt beams)
+        heterogeneous_baseline_extraction_mask=(CHORDbeam_idx+Galtbeam_idx)==1 # the entries with values of 1 are the baselines to extract (0 = two CHORD beams; 2 = two Galt beams)
+        heterogeneous_baseline_extraction_mask=np.asarray(heterogeneous_baseline_extraction_mask,dtype=int) # casting necessary for take_along_axis forward-compatibility
     CHORD_beam,Galt_beam=leading_order_beams
     interface=BeamInterface(Galt_beam, beam_type="efield")
     az_vec=np.linspace(0,np.pi/2, Nside) # rad
     za_vec=np.linspace(0,2*np.pi, Nside) # rad
-    # sure, this is embarrassingly parallel, but the first thing is to get the flow of eval ironed out, even if that means using a painfully inefficient loop
-    print("time vec entry 0---is it still astropy-dimensionful?",time_vec[0])
+    # TODO: acquiesce to the embarassing paraellizability (although, yes, I had to do it the slow way first to figure things out)
     for i in range(Ntime):
         repointed_Galt_beam=interface.compute_response(az_array=az_vec,
                                                        za_array=za_vec,
@@ -164,8 +174,16 @@ def manually_track_with_Galt(matvis_backend="cpu",
 
     # TODO: do not assume that the baseline ordering will always follow C-like ordering (either verify that or generalize this)
     heterogeneous_baseline_extraction_mask_flattened=np.reshape(heterogeneous_baseline_extraction_mask,(Nant**2,),order="C")
-    tracked_vis_heterogeneous_only=Galt_tracked_visibilities[np.nonzero(heterogeneous_baseline_extraction_mask_flattened==1,axis=2)] # keep all freqs, all times but only the baselines of interest
-    
+    # I flattened antennaA,antennaB into baselineAB, but now I have to tile ths to match the shape of the vis mat: (Nfreq,Ntime,Nbl)
+    het_bl_mask_3d = np.tile(heterogeneous_baseline_extraction_mask_flattened, 
+                             (Nfreq, Ntime, 1))
+    print("mean, std of 3d mask: ",np.mean(het_bl_mask_3d),np.std(het_bl_mask_3d))
+    tracked_vis_heterogeneous_only=np.take_along_axis(Galt_tracked_visibilities,
+                                                      het_bl_mask_3d,
+                                                      axis=2)
+    print("tracked_vis_heterogeneous_only.shape=",tracked_vis_heterogeneous_only.shape)
+    print("extrema of tracked_vis_heterogeneous_only: ",np.min(tracked_vis_heterogeneous_only),np.max(tracked_vis_heterogeneous_only))
+
     return Galt_tracked_visibilities,tracked_vis_heterogeneous_only
 
 # TODO: more rigorous fact-checking of the first references I found for these values
@@ -193,10 +211,7 @@ CHIME_ALPHAS=np.asarray([elem["alpha"] for elem in CHIME_match.values()])
 CHIME_S600=np.asarray([elem["S600"] for elem in CHIME_match.values()])
 CHIME_FLUX_ALLFREQ=((FREQS[:, np.newaxis] / FREQS[0]) ** CHIME_ALPHAS.T * CHIME_S600.T).T
 
-# something I should've tested during the week of Sept 21st but apparently forgor
-print("extrema of RAs: ",np.min(CHIME_RA),np.max(CHIME_RA))
-print("extrema of decs: ",np.min(CHIME_DEC),np.max(CHIME_DEC))
-
+# something I should've tested during the week of Sept 21st but apparently I forgor
 res= binned_statistic_2d(CHIME_RA, CHIME_DEC, CHIME_S600, # bins=Nside**2, 
                          bins=[500,500],
                          range=[[0,2*np.pi], [-np.pi,np.pi]]) # dec and RA both in rad
@@ -261,7 +276,6 @@ orientation=-1.75*np.pi/180
 rot_mat= np.asarray([[np.cos(orientation),-np.sin(orientation)], 
                      [np.sin(orientation), np.cos(orientation)]])
 EN_unitless = np.dot(EN_unitless, rot_mat.T)
-print("EN_unitless.shape =",EN_unitless.shape)
 E_unitless,N_unitless=EN_unitless.T
 
 holog_EW=list(E_unitless*u.m) # re-formed, now rotated
@@ -289,6 +303,29 @@ CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord
 t2=time.time()
 print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s".format(t2-t1))
 np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
-np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz")
+np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz") # TODO: figure out why this file in particular is empty when I import it from another script even though the shape and absence of nans look good here
+
+visibility_versions=[CHORD_Galt_tracking_vis,heterogeneous_only]
+visibility_names=["all baselines", "heterogeneous baselines only"]
+shortname=["all","het"]
+
+# Nfreq, Ntime, Nbl
+
+for i,vis in enumerate(visibility_versions):
+    # waterfall: keep time and frequency
+    baseline_ab=6223
+    vis_for_wf=vis[:,:,baseline_ab]
+    wf=np.abs(vis_for_wf)**2
+    wfs0,wfs1=wf.shape
+
+    plt.figure(layout="constrained",figsize=(6,4))
+    plt.imshow(wf,aspect=wfs1/wfs0,norm="log")
+    plt.colorbar()
+    plt.title("tracking waterfall\n"+visibility_names[i])
+    plt.xlabel("time (s)")
+    plt.ylabel("freq (MHz)")
+    print("CHECK TRANSPOSITION OF WATERFALL")
+    plt.savefig("waterfall_{}_{}.png".format(baseline_ab,shortname[i]))
+    plt.close()
 
 # TODO: run matvis GPU backend on Fir OR find the backdoor to use multiple beam types with fftvis
