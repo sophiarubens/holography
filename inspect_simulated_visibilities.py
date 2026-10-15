@@ -12,28 +12,43 @@ def collapse_antenna_axes_to_baseline_axis(visibilities):
             vismat[:,:,k]=visibilities[:,:,i,j]
     return vismat
 
-npzfiles=np.load("matvis_cpu_holog.npz")
-print("npzfiles.files =",npzfiles.files)
-vis=npzfiles["arr_0"]
-print("vis.shape=",vis.shape)
-# Nfreq, Ntime, Nant, Nant
+# npzfiles=np.load("matvis_cpu_holog.npz") # week of Sept 21st
+# print("npzfiles.files =",npzfiles.files)
+# vis=npzfiles["arr_0"]
+# print("vis.shape=",vis.shape)
 
-# waterfall: keep time and frequency
-baseline_ab=6223
-vis_for_wf=vis[:,:,baseline_ab]
-wf=np.abs(vis_for_wf)**2
-wfs0,wfs1=wf.shape
+npzall=np.load("CHORD_x_Galt_tracking.npz") # week of Sept 28th
+npzhet=np.load("CHORD_x_Galt_tracking_heterogeneous_only.npz") # week of Sept 28th
+print("npzall.files=",npzall.files)
+print("npzhet.files=",npzhet.files)
+CHORD_Galt_track_vis=npzall["arr_0"]
+# CHORD_Galt_track_het_only_vis=npzhet["arr_0"]
 
-plt.figure(layout="constrained",figsize=(6,4))
-plt.imshow(wf,aspect=wfs1/wfs0,norm="log")
-plt.colorbar()
-plt.title("waterfall for simple matvis CHORD + side antenna sim")
-plt.xlabel("time (s)")
-plt.ylabel("freq (MHz)")
-print("CHECK TRANSPOSITION OF WATERFALL")
-plt.savefig("waterfall_{}.png".format(baseline_ab))
-plt.close()
+visibility_versions=[CHORD_Galt_track_vis] #,CHORD_Galt_track_het_only_vis]
+visibility_names=["all baselines"] #, "heterogeneous baselines only"]
 
+# Nfreq, Ntime, Nbl
+
+for i,vis in enumerate(visibility_versions):
+    # waterfall: keep time and frequency
+    baseline_ab=6223
+    vis_for_wf=vis[:,:,baseline_ab]
+    wf=np.abs(vis_for_wf)**2
+    wfs0,wfs1=wf.shape
+
+    plt.figure(layout="constrained",figsize=(6,4))
+    plt.imshow(wf,aspect=wfs1/wfs0,norm="log")
+    plt.colorbar()
+    plt.title("tracking waterfall\n"+visibility_names[i])
+    plt.xlabel("time (s)")
+    plt.ylabel("freq (MHz)")
+    print("CHECK TRANSPOSITION OF WATERFALL")
+    plt.savefig("waterfall_{}.png".format(baseline_ab))
+    plt.close()
+
+
+
+assert(1==0)
 # delay spec: keep frequency and baseline -> pick a single timestamp and then reshape the two antenna dimensions to be a single baseline dimension
 time_idx=0
 vis_for_delay_spec=vis[:,time_idx,:]

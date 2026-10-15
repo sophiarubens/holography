@@ -17,22 +17,40 @@ import time
 import cmasher
 
 # TODO: generalize to more realistic values, chunk up the band with different Nsides, etc. 
-NFREQS=100
+NFREQS=1653
 GLOBAL_NSIDE=512
-FREQS=np.linspace(300,600,NFREQS)*u.MHz
+FREQS=np.linspace(300,600.096,NFREQS)*u.MHz
 NTIMES=100
 JD0=2461274
-JD1=JD0+0.05
+JD1=JD0+0.5
 time_vec=np.linspace(JD0, JD1, NTIMES)
 TIMES=Time(time_vec, format="jd", scale="utc") 
 DRAO=EarthLocation.of_site("drao") # coordinates in the astropy database are for Galt, but this is convenient and good enough for now
 print(DRAO)
 omega_e=np.pi/12 # 2pi rad / 24 hr = pi/12
+recalc = False
 
 # polarized visibility matrices are indexed as (N freqs, N times, N feed i, N feed j, N baselines)
 # unpolarized visibility matrices are indexed as (N freqs, N times, N antennas, N antennas) 
 #    AnalyticBeam objects don't support polarization
 #    in practice, the returned visibilities are actually (N freqs, N times, N baselines)
+
+# TODO: more rigorous fact-checking of the first references I found for these values
+CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible based on https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8
+             "CasA": {"dec":58.8, "ra":23.3900, "S600":2375, "alpha":-2,    "confN": 0.03},
+             "TauA": {"dec":22.0, "ra":5.5755,  "S600":1142, "alpha":-0.3,  "confN": 0.06},
+             "PerB": {"dec":29.7, "ra":4.6180,  "S600":  87, "alpha":-1.3,  "confN": 0.8}, # https://arxiv.org/html/2603.23587v1#S5
+             "3C10C":{"dec":64.2, "ra":0.4203,  "S600":  71, "alpha":-0.62, "confN": 7}, # unclear what they meant by this -> currently using 3C10 value as placeholder
+             "3C84": {"dec":41.5, "ra":3.3300,  "S600":  38, "alpha":-0.93, "confN":10}, # from the 3C catalogue paper
+             "3C295":{"dec":52.5, "ra":14.1889, "S600":  37, "alpha":-0.08, "confN": 2},
+             "3C58": {"dec":64.8, "ra":2.0936,  "S600":  31, "alpha":+0.11, "confN": 2},
+             "3C147":{"dec":49.9, "ra":5.7101,  "S600":  29, "alpha":+0.77, "confN": 2},
+             "3C111":{"dec":38.0, "ra":4.3058,  "S600":  29, "alpha":-0.75, "confN": 2},
+             "3C196":{"dec":48.2, "ra":8.2267,  "S600":  28, "alpha":-0.68, "confN": 2},
+             "3C409":{"dec":23.6, "ra":20.2410, "S600":  27, "alpha":-0.78, "confN": 3},
+             "3C48": {"dec":33.2, "ra":1.6281,  "S600":  25, "alpha":-0.07, "confN": 3},
+             "3C286":{"dec":30.5, "ra":13.5189, "S600":  18, "alpha":-0.19, "confN": 4}
+            } # radio point sources from the CHIME 2024 holography paper that could appear at boresight for CHORD
 
 def fringe_rate(H=12*u.hourangle, delta=0*u.hourangle, # source hr angle and dec (defaults to zenith for drift-scan)
                 h=0*u.hourangle, d=49*u.deg,           # baseline-at-current-pointing hr angle and dec
@@ -140,6 +158,14 @@ def manually_track_with_Galt(matvis_backend="cpu",
 
     if leading_order_beams is None:
         # TODO: add a new keyword arg so I can adjust the nominal pointing (CHORD ~Cyg A or something and Galt starting at the correct RA/dec for the repointing to be physical)
+        CHORD_beam=AiryBeam(diameter=26.)
+        Galt_beam=AiryBeam(diameter=26.)
+        try:
+            CHIME_match["+str(pointing_centre_source_name)+"]
+        except:
+            raise ValueError("invalid source name (absent from current catalogue)")
+
+        
         leading_order_beams=[AiryBeam(diameter=6.),AiryBeam(diameter=26.)]
         antenna_diameter_indices=np.zeros(Nant,dtype=int)
         antenna_diameter_indices[-1]=int(1)
@@ -185,23 +211,6 @@ def manually_track_with_Galt(matvis_backend="cpu",
     print("extrema of tracked_vis_heterogeneous_only: ",np.min(tracked_vis_heterogeneous_only),np.max(tracked_vis_heterogeneous_only))
 
     return Galt_tracked_visibilities,tracked_vis_heterogeneous_only
-
-# TODO: more rigorous fact-checking of the first references I found for these values
-CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible based on https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8
-             "CasA": {"dec":58.8, "ra":23.3900, "S600":2375, "alpha":-2,    "confN": 0.03},
-             "TauA": {"dec":22.0, "ra":5.5755,  "S600":1142, "alpha":-0.3,  "confN": 0.06},
-             "PerB": {"dec":29.7, "ra":4.6180,  "S600":  87, "alpha":-1.3,  "confN": 0.8}, # https://arxiv.org/html/2603.23587v1#S5
-             "3C10C":{"dec":64.2, "ra":0.4203,  "S600":  71, "alpha":-0.62, "confN": 7}, # unclear what they meant by this -> currently using 3C10 value as placeholder
-             "3C84": {"dec":41.5, "ra":3.3300,  "S600":  38, "alpha":-0.93, "confN":10}, # from the 3C catalogue paper
-             "3C295":{"dec":52.5, "ra":14.1889, "S600":  37, "alpha":-0.08, "confN": 2},
-             "3C58": {"dec":64.8, "ra":2.0936,  "S600":  31, "alpha":+0.11, "confN": 2},
-             "3C147":{"dec":49.9, "ra":5.7101,  "S600":  29, "alpha":+0.77, "confN": 2},
-             "3C111":{"dec":38.0, "ra":4.3058,  "S600":  29, "alpha":-0.75, "confN": 2},
-             "3C196":{"dec":48.2, "ra":8.2267,  "S600":  28, "alpha":-0.68, "confN": 2},
-             "3C409":{"dec":23.6, "ra":20.2410, "S600":  27, "alpha":-0.78, "confN": 3},
-             "3C48": {"dec":33.2, "ra":1.6281,  "S600":  25, "alpha":-0.07, "confN": 3},
-             "3C286":{"dec":30.5, "ra":13.5189, "S600":  18, "alpha":-0.19, "confN": 4}
-            } # radio point sources from the CHIME 2024 holography paper that could appear at boresight for CHORD
 
 # TODO: stop doing hacky outside-the-function simulation and actually use my own helper function
 # similar to simulate_sky but just the bright catalogue sources
@@ -298,13 +307,19 @@ plt.close()
 # np.savez("matvis_cpu_holog.npz",vis_matvis_cpu)
 
 # experiments from the week of Sept 28th
-t1=time.time()
-CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless))
-t2=time.time()
-print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s".format(t2-t1))
-np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
-np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz") # TODO: figure out why this file in particular is empty when I import it from another script even though the shape and absence of nans look good here
+if recalc:
+    t1=time.time()
+    CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless))
+    t2=time.time()
+    print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s".format(t2-t1))
+    np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
+    np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz", heterogeneous_only)
 
+else:
+    CHORD_Galt_tracking_vis=np.load("CHORD_x_Galt_tracking.npz")["arr_0"]
+    heterogeneous_only= np.zeros_like(CHORD_Galt_tracking_vis) # np.load("CHORD_x_Galt_tracking_heterogeneous_only.npz")["arr_0"]
+
+print("CHORD_Galt_tracking_vis.shape=",CHORD_Galt_tracking_vis.shape)
 visibility_versions=[CHORD_Galt_tracking_vis,heterogeneous_only]
 visibility_names=["all baselines", "heterogeneous baselines only"]
 shortname=["all","het"]
@@ -319,7 +334,12 @@ for i,vis in enumerate(visibility_versions):
     wfs0,wfs1=wf.shape
 
     plt.figure(layout="constrained",figsize=(6,4))
-    plt.imshow(wf,aspect=wfs1/wfs0,norm="log")
+    plt.imshow(wf,
+               aspect=wfs1/wfs0,
+               norm="log",
+               origin="lower",
+               extent=[TIMES[0].utc,TIMES[-1].utc,
+                       FREQS[0].value,FREQS[-1].value])
     plt.colorbar()
     plt.title("tracking waterfall\n"+visibility_names[i])
     plt.xlabel("time (s)")
