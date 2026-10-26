@@ -28,7 +28,8 @@ TIMES=Time(time_vec, format="jd", scale="utc")
 DRAO=EarthLocation.of_site("drao") # coordinates in the astropy database are for Galt, but this is convenient and good enough for now
 print(DRAO)
 omega_e=np.pi/12 # 2pi rad / 24 hr = pi/12
-recalc = False
+recalc = True
+pointing_centre_source_name="CygA"
 
 # polarized visibility matrices are indexed as (N freqs, N times, N feed i, N feed j, N baselines)
 # unpolarized visibility matrices are indexed as (N freqs, N times, N antennas, N antennas) 
@@ -154,15 +155,14 @@ def manually_track_with_Galt(matvis_backend="cpu",
     Ntime=len(time_vec)
     Nfreq=len(freqs) # might not be NFREQS in the case of having overwritten the keyword fallback
     Galt_tracked_visibilities=np.zeros((Nfreq,Ntime,Nant**2),dtype=np.complex128)
-    # TODO: make this safe for cases where Galt is not necessarily the last beam type in the list? could be, but not a priority... this is just the way I'm simulating things
 
     if leading_order_beams is None:
-        # TODO: add a new keyword arg so I can adjust the nominal pointing (CHORD ~Cyg A or something and Galt starting at the correct RA/dec for the repointing to be physical)
         CHORD_beam=AiryBeam(diameter=26.)
-        Galt_beam=AiryBeam(diameter=26.)
+        Galt_beam=AiryBeam(diameter=26.) # putting Galt last is literally just an arbitrary choice
         try:
-            CHIME_match["+str(pointing_centre_source_name)+"]
+            CHIME_match[str(pointing_centre_source_name)]
         except:
+            print("pointing_centre_source_name=",pointing_centre_source_name)
             raise ValueError("invalid source name (absent from current catalogue)")
 
         
@@ -272,6 +272,20 @@ CHORD_ant_mask[    6 , - 1  ]=False # extra antenna missing from SE corner
 
 CHORD_EW=CHORD_EW_coords[CHORD_ant_mask]
 CHORD_NS=CHORD_NS_coords[CHORD_ant_mask]
+
+orientation=-1.75*np.pi/180
+rot_mat= np.asarray([[np.cos(orientation),-np.sin(orientation)], 
+                     [np.sin(orientation), np.cos(orientation)]])
+
+index_of_single_CHORD_ant=0
+single_CHORD_EW=CHORD_EW[index_of_single_CHORD_ant]
+single_CHORD_NS=CHORD_NS[index_of_single_CHORD_ant]
+holog_EW_unitless_1bl=[single_CHORD_EW.value, Galt_EW.value]
+holog_NS_unitless_1bl=[single_CHORD_NS.value, Galt_NS.value]
+EN_unitless_1bl = np.vstack((holog_EW_unitless_1bl, holog_NS_unitless_1bl)).T
+EN_unitless_1bl = np.dot(EN_unitless_1bl, rot_mat.T)
+E_unitless_1bl,N_unitless_1bl=EN_unitless_1bl.T
+
 CHORD_EW=list(CHORD_EW)
 CHORD_NS=list(CHORD_NS)
 holog_EW=CHORD_EW +[Galt_EW] # should be a list by now
@@ -281,9 +295,6 @@ holog_EW_unitless=[ew.value for ew in holog_EW]
 holog_NS_unitless=[ns.value for ns in holog_NS]
 EN_unitless = np.vstack((holog_EW_unitless, holog_NS_unitless)).T
 
-orientation=-1.75*np.pi/180
-rot_mat= np.asarray([[np.cos(orientation),-np.sin(orientation)], 
-                     [np.sin(orientation), np.cos(orientation)]])
 EN_unitless = np.dot(EN_unitless, rot_mat.T)
 E_unitless,N_unitless=EN_unitless.T
 
@@ -309,11 +320,12 @@ plt.close()
 # experiments from the week of Sept 28th
 if recalc:
     t1=time.time()
-    CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless))
+    # CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless)) # nonsense where I was trying to simulate full CHORD at full time and frequency resolution
+    CHORD_Galt_tracking_vis,_=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless)) # heterogeneous_only is redundant when there's only a single simulated baseline
     t2=time.time()
     print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s".format(t2-t1))
     np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
-    np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz", heterogeneous_only)
+    # np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz", heterogeneous_only)
 
 else:
     CHORD_Galt_tracking_vis=np.load("CHORD_x_Galt_tracking.npz")["arr_0"]
