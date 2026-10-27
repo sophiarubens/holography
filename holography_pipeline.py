@@ -17,13 +17,13 @@ import time
 import cmasher
 
 # TODO: generalize to more realistic values, chunk up the band with different Nsides, etc. 
-NFREQS=1653
-GLOBAL_NSIDE=512
-FREQS=np.linspace(300,600.096,NFREQS)*u.MHz
-NTIMES=100
+GLOBAL_NSIDE=256
+FREQS=np.arange(300,320,0.195)*u.MHz
+NFREQS=len(FREQS)
 JD0=2461274
-JD1=JD0+0.5
-time_vec=np.linspace(JD0, JD1, NTIMES)
+JD1=JD0+0.25
+time_vec=np.arange(JD0, JD1, 10/3600)
+NTIMES=len(time_vec)
 TIMES=Time(time_vec, format="jd", scale="utc") 
 DRAO=EarthLocation.of_site("drao") # coordinates in the astropy database are for Galt, but this is convenient and good enough for now
 print(DRAO)
@@ -321,7 +321,7 @@ plt.close()
 if recalc:
     t1=time.time()
     # CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless)) # nonsense where I was trying to simulate full CHORD at full time and frequency resolution
-    CHORD_Galt_tracking_vis,_=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless)) # heterogeneous_only is redundant when there's only a single simulated baseline
+    CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless)) # heterogeneous_only is redundant when there's only a single simulated baseline
     t2=time.time()
     print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s".format(t2-t1))
     np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
@@ -338,7 +338,12 @@ shortname=["all","het"]
 
 # Nfreq, Ntime, Nbl
 
-for i,vis in enumerate(visibility_versions):
+vis=CHORD_Galt_tracking_vis
+Nnans=np.sum(np.isnan(vis))
+Ninfs=np.sum(np.isnan(vis))
+problem=Nnans>0 or Ninfs>0
+
+if not problem:
     # waterfall: keep time and frequency
     baseline_ab=6223
     vis_for_wf=vis[:,:,baseline_ab]
@@ -347,17 +352,20 @@ for i,vis in enumerate(visibility_versions):
 
     plt.figure(layout="constrained",figsize=(6,4))
     plt.imshow(wf,
-               aspect=wfs1/wfs0,
-               norm="log",
-               origin="lower",
-               extent=[TIMES[0].utc,TIMES[-1].utc,
-                       FREQS[0].value,FREQS[-1].value])
+                aspect=wfs1/wfs0,
+                norm="log",
+                origin="lower",
+                extent=[ TIMES[0].utc,TIMES[-1].utc,
+                        FREQS[0],    FREQS[-1]      ])
     plt.colorbar()
-    plt.title("tracking waterfall\n"+visibility_names[i])
+    plt.title("tracking waterfall\n"+visibility_names[0])
     plt.xlabel("time (s)")
     plt.ylabel("freq (MHz)")
     print("CHECK TRANSPOSITION OF WATERFALL")
-    plt.savefig("waterfall_{}_{}.png".format(baseline_ab,shortname[i]))
+    plt.savefig("waterfall_{}_{}.png".format(baseline_ab,shortname[0]))
     plt.close()
+else:
+    print("there was a problem, so plotting is skipped")
+    print("N nans, N infs =",Nnans,Ninfs)
 
 # TODO: run matvis GPU backend on Fir OR find the backdoor to use multiple beam types with fftvis
