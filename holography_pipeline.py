@@ -1,24 +1,32 @@
 import numpy as np
 from matplotlib import pyplot as plt
+from matplotlib.colors import LogNorm,CenteredNorm,SymLogNorm
 
 from astropy.coordinates import EarthLocation
 from astropy.time import Time
 from astropy.units import Quantity
 from astropy import units as u
 
+# from caput.astro.coordinates import spherical
+import healpy as hp
 import matvis
 
-import healpy as hp
 from pyuvdata.analytic_beam import AiryBeam
 from pyuvdata import BeamInterface
+
+from scipy.constants import c
 from scipy.fft import fftfreq,fftshift
 from scipy.stats import binned_statistic_2d
+
 import time
-import cmasher
+import cmasher as cmr
 
 # TODO: generalize to more realistic values, chunk up the band with different Nsides, etc. 
-GLOBAL_NSIDE=256
-FREQS=np.arange(300,320,0.195)*u.MHz
+GLOBAL_NSIDE=512
+freq_hi=320
+freq_lo=300
+FREQS=np.arange(freq_lo,freq_hi,0.195)*u.MHz
+freq_range=freq_hi-freq_lo
 NFREQS=len(FREQS)
 JD0=2461274
 JD1=JD0+0.25
@@ -26,15 +34,73 @@ time_vec=np.arange(JD0, JD1, 10/3600)
 NTIMES=len(time_vec)
 TIMES=Time(time_vec, format="jd", scale="utc") 
 DRAO=EarthLocation.of_site("drao") # coordinates in the astropy database are for Galt, but this is convenient and good enough for now
-print(DRAO)
 omega_e=np.pi/12 # 2pi rad / 24 hr = pi/12
-recalc = True
+recalc = False
 pointing_centre_source_name="CygA"
 
 # polarized visibility matrices are indexed as (N freqs, N times, N feed i, N feed j, N baselines)
 # unpolarized visibility matrices are indexed as (N freqs, N times, N antennas, N antennas) 
 #    AnalyticBeam objects don't support polarization
 #    in practice, the returned visibilities are actually (N freqs, N times, N baselines)
+
+# caput -> caput -> astro -> coordinates -> spherical.py (I couldn't install caput locally since the wheels kept failing to build, even when I did an OpenMP override, and another 10-hr library installation adventure is not worth my time this week)
+def projected_distance(ha, lat, dec, x, y, z=0.0):
+    """Compute distance projected in the direction of a source.
+
+    Parameters
+    ----------
+    ha : array_like
+        The CIRS hour angle of the source in radians.
+    lat : array_like
+        The latitude of the observatory in radians.
+    dec : array_like
+        The CIRS declination of the source in radians.
+    x : array_like
+        The East-West coordinate in wavelengths (increases to the East).
+    y : array_like
+        The North-South coordinate in wavelengths (increases to the North).
+    z : array_like
+        The vertical coordinate in wavelengths (increases upwards).
+
+    Returns
+    -------
+    distance : ndarray
+        The projected distance. Has whatever units `x`, `y`, `z` had.
+    """
+    # We could use `sph_to_ground` here, but it's likely to be more memory
+    # efficient to do this directly
+    dist = x * (-1 * np.cos(dec) * np.sin(ha))
+    dist += y * (np.cos(lat) * np.sin(dec) - np.sin(lat) * np.cos(dec) * np.cos(ha))
+    dist += z * (np.sin(lat) * np.sin(dec) + np.cos(lat) * np.cos(dec) * np.cos(ha))
+
+    return dist
+
+# draco -> draco -> util -> interferometry.py -> fringestop_phase
+def fringestop_phase_term(ha, lat, dec, u, v, w=0.0):
+    """Return the phase required to fringestop. All angle inputs are radians.
+
+    Note that for a visibility V_{ij} = < E_i E_j^*>, this expects the u, v,
+    w coordinates are the components of (d_i - d_j) / lambda.
+
+    Parameters
+    ----------
+    ha, dec : array_like
+        Of the source 
+    lat     : array_like
+        Of the observatory
+    u, v, w : array_like
+        In lambdas
+    Returns
+    -------
+    phase : np.ndarray
+        The phase required to *correct* the fringing. Shape is
+        given by the broadcast of the arguments together.
+    """
+    # print("ha, lat, dec, u, v, w =",ha, lat, dec, u, v, w)
+    print("types of ha, lat, dec, u, v, w =",type(ha),type(lat),type(dec),type(u),type(v),type(w))
+    phase = -2.0j * np.pi * projected_distance(ha, lat, dec, u, v, w)
+
+    return np.exp(phase, out=phase)
 
 # TODO: more rigorous fact-checking of the first references I found for these values
 CHIME_match={"CygA": {"dec":40.7, "ra":19.9912, "S600":3613, "alpha":-0.82, "confN": 0.02}, # plausible based on https://www.aanda.org/articles/aa/full_html/2020/03/aa36844-19/aa36844-19.html#S8
@@ -178,6 +244,7 @@ def manually_track_with_Galt(matvis_backend="cpu",
     az_vec=np.linspace(0,np.pi/2, Nside) # rad
     za_vec=np.linspace(0,2*np.pi, Nside) # rad
     # TODO: acquiesce to the embarassing paraellizability (although, yes, I had to do it the slow way first to figure things out)
+    print("manually_track_with_Galt: antpos =",antpos)
     for i in range(Ntime):
         repointed_Galt_beam=interface.compute_response(az_array=az_vec,
                                                        za_array=za_vec,
@@ -210,6 +277,7 @@ def manually_track_with_Galt(matvis_backend="cpu",
     print("tracked_vis_heterogeneous_only.shape=",tracked_vis_heterogeneous_only.shape)
     print("extrema of tracked_vis_heterogeneous_only: ",np.min(tracked_vis_heterogeneous_only),np.max(tracked_vis_heterogeneous_only))
 
+    print("manually_track_with_Galt: np.sum(Galt_tracked_visibilities), np.sum(Galt_tracked_visibilities[:,:,0])",np.sum(Galt_tracked_visibilities), np.sum(Galt_tracked_visibilities[:,:,0]))
     return Galt_tracked_visibilities,tracked_vis_heterogeneous_only
 
 # TODO: stop doing hacky outside-the-function simulation and actually use my own helper function
@@ -228,8 +296,6 @@ histogram_of_simulated_point_sources=res.statistic
 histogram_of_simulated_point_sources[np.isnan(histogram_of_simulated_point_sources)]=0
 print("extrema of histogram: ",np.min(histogram_of_simulated_point_sources),np.max(histogram_of_simulated_point_sources))
 
-print("histogram_of_simulated_point_sources.shape=",histogram_of_simulated_point_sources.shape)
-
 # plot the sky map
 plt.figure()
 # plt.subplot(projection="mollweide")
@@ -237,7 +303,7 @@ plt.imshow(histogram_of_simulated_point_sources.T,
            norm="symlog",
            extent=[0,2*np.pi,-np.pi,np.pi],
            origin="lower",
-           cmap=cmasher.torch)
+           cmap=cmr.torch)
 plt.axhline(19*np.pi/180,c="w")
 plt.axhline(79*np.pi/180,c="w")
 cbar=plt.colorbar()
@@ -307,28 +373,21 @@ plt.title("holog coordinates")
 plt.savefig("holog_coords.png")
 plt.close()
 
-
-# experiments from the week of Sept 21st
-# t1=time.time()
-# vis_matvis_cpu=simulate_visibilities(simulator="matvis",
-#                                      antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless),
-#                                      matvis_backend="cpu")
-# t2=time.time()
-# print("fftvis CPU simulation took {} s".format(t2-t1))
-# np.savez("matvis_cpu_holog.npz",vis_matvis_cpu)
-
 # experiments from the week of Sept 28th
 if recalc:
     t1=time.time()
     # CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless)) # nonsense where I was trying to simulate full CHORD at full time and frequency resolution
-    CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless,N_unitless)) # heterogeneous_only is redundant when there's only a single simulated baseline
+    CHORD_Galt_tracking_vis,heterogeneous_only=manually_track_with_Galt(antpos=coord_arrays_to_HERA_format(E_unitless_1bl,N_unitless_1bl)) # heterogeneous_only is redundant when there's only a single simulated baseline
     t2=time.time()
     print("simulating hybrid driftscan-tracking CHORD x Galt visibilities took {} s".format(t2-t1))
-    np.savez("CHORD_x_Galt_tracking.npz",CHORD_Galt_tracking_vis)
+    print("np.sum(CHORD_Galt_tracking_vis) =",np.sum(CHORD_Galt_tracking_vis))
+    np.save("CHORD_x_Galt_tracking.npy",CHORD_Galt_tracking_vis)
     # np.savez("CHORD_x_Galt_tracking_heterogeneous_only.npz", heterogeneous_only)
 
 else:
-    CHORD_Galt_tracking_vis=np.load("CHORD_x_Galt_tracking.npz")["arr_0"]
+    CHORD_Galt_tracking_vis=np.load("CHORD_x_Galt_tracking.npy")
+    print("np.sum(CHORD_Galt_tracking_vis) =",np.sum(CHORD_Galt_tracking_vis))
+    assert np.sum(CHORD_Galt_tracking_vis)>0, "why is this ok before saving and bad after???"
     heterogeneous_only= np.zeros_like(CHORD_Galt_tracking_vis) # np.load("CHORD_x_Galt_tracking_heterogeneous_only.npz")["arr_0"]
 
 print("CHORD_Galt_tracking_vis.shape=",CHORD_Galt_tracking_vis.shape)
@@ -338,34 +397,236 @@ shortname=["all","het"]
 
 # Nfreq, Ntime, Nbl
 
-vis=CHORD_Galt_tracking_vis
-Nnans=np.sum(np.isnan(vis))
-Ninfs=np.sum(np.isnan(vis))
-problem=Nnans>0 or Ninfs>0
-
-if not problem:
-    # waterfall: keep time and frequency
-    baseline_ab=6223
-    vis_for_wf=vis[:,:,baseline_ab]
-    wf=np.abs(vis_for_wf)**2
-    wfs0,wfs1=wf.shape
-
-    plt.figure(layout="constrained",figsize=(6,4))
-    plt.imshow(wf,
-                aspect=wfs1/wfs0,
-                norm="log",
-                origin="lower",
-                extent=[ TIMES[0].utc,TIMES[-1].utc,
-                        FREQS[0],    FREQS[-1]      ])
-    plt.colorbar()
-    plt.title("tracking waterfall\n"+visibility_names[0])
-    plt.xlabel("time (s)")
-    plt.ylabel("freq (MHz)")
-    print("CHECK TRANSPOSITION OF WATERFALL")
-    plt.savefig("waterfall_{}_{}.png".format(baseline_ab,shortname[0]))
-    plt.close()
-else:
-    print("there was a problem, so plotting is skipped")
-    print("N nans, N infs =",Nnans,Ninfs)
+case_use=0 # this has to be 0 when i only simulate one baseline
+vis=visibility_versions[case_use]
+hr_after_start_of_acq=(time_vec[-1]-np.floor(time_vec[-1]))*24
 
 # TODO: run matvis GPU backend on Fir OR find the backdoor to use multiple beam types with fftvis
+
+src=CHIME_match["CygA"]
+LST= np.copy(time_vec) # TODO: convert these to sidereal 
+fs_ha = LST - src["ra"] # HA=LST-RA; at least these are both already in hours
+fs_dec= src["dec"]
+DRAOlat=DRAO.lat.value
+assert np.abs(DRAOlat-49)<1, "was the DRAO lat actually stored in degrees?"
+Deltax,Deltay= single_CHORD_EW.value-Galt_EW.value, single_CHORD_NS.value-Galt_NS.value
+lambdas=c*u.m/u.s/FREQS
+lambdas=lambdas.decompose()
+
+# draco -> draco -> analysis -> beam.py -> CreateBeamStreamFromTelescope.process
+u=np.atleast_1d(Deltax)[np.newaxis, :] / lambdas[:, np.newaxis] # this would've been good for more baselines
+u=u[:, :, np.newaxis, np.newaxis]
+u=u.value
+v=np.atleast_1d(Deltay)[np.newaxis, :] / lambdas[:, np.newaxis]
+v=v[:, :, np.newaxis, np.newaxis]
+v=v.value
+# u=Deltax[np.newaxis, :] / lambdas[:, np.newaxis] # this would've been good for more baselines
+# u=u[:, :, np.newaxis, np.newaxis]
+# v=Deltay[np.newaxis, :] / lambdas[:, np.newaxis]
+# v=v[:, :, np.newaxis, np.newaxis]
+
+
+# "Rotate the baseline distances by the telescope's rotation angle.            << this rotation angle is about literal offset from true NS-vs-EW baselines
+# This assumes that the baseline distances used to beamform in the
+# NS direction were NOT rotated, and hence the phase due to that rotation
+# should be corrected by the beam.  Note that we can only partially
+# correct for the rotation in this way, since we have already collapsed
+# over NS baselines. However, this partial correction should be pretty good
+# for small rotation angles and for sources near meridian."
+# rot = np.deg2rad(1.75)                                                       << although I put a CHORD-like rotation angle in here, I'm not using this part, because I used actual antenna positions where the CHORD antenna already has array rotation baked in
+# v = np.sin(rot) * u
+# u = np.cos(rot) * u
+
+# Calculate the phase
+phi_Galt_CHORD = fringestop_phase_term( fs_ha, np.deg2rad(DRAOlat), fs_dec, 
+                                        u, v 
+                                        ).conj()
+phi_CHORD_Galt = fringestop_phase_term( fs_ha, np.deg2rad(DRAOlat), fs_dec, 
+                                        -u, -v 
+                                        ).conj()
+print("shape of fringestopping phase =",phi_Galt_CHORD.shape)
+print("shape of reverse-engineered pruned fringestopping phase =",phi_CHORD_Galt.shape)
+
+fringestopping_phase_terms=[1, 
+                            phi_CHORD_Galt[:,0,0,:], 
+                            phi_Galt_CHORD[:,0,0,:], 
+                            1] # CHORD-CHORD, CHORD-Galt, Galt-CHORD, Galt-Galt << order intuited from looking at waterfalls
+CHORD_ant_name="CHORD X01" # TODO: make this more robust so it's not hard-coded if I change which CHORD antenna I put in my visibility simulations
+baseline_names=[CHORD_ant_name+"–"+CHORD_ant_name,
+                CHORD_ant_name+"–Galt",
+                "Galt–"+CHORD_ant_name,
+                "Galt-Galt"]
+human_friendly_t0=TIMES[0].strftime("%Y %b %d %H:%m")
+# ok to set the norm from unfringestopped visibilities because, of course, applying a phase doesn't change the norm
+cyclic_cmap="twilight_shifted"
+sequential_cmap=cmr.sapphire
+
+################################################################################################################################################
+# NULL TEST WITH ABS2
+sharednorm=LogNorm(vmin=(np.abs(vis)**2).min(),vmax=(np.abs(vis)**2).max())
+fig,axs=plt.subplots( 2,4, layout="constrained", figsize=(12,5),
+                      sharex=True, sharey=True                    
+                      )
+axs[1,0].set_xlabel("time after start of acq (hr)")
+axs[1,0].set_ylabel("freq (MHz)")
+row0_title_prefixes=["\n","                                                  raw |vis|$^2$\n","\n","\n"]
+axs[1,1].set_title("                                                       fringestopped |vis|$^2$")
+plt.suptitle("matvis-simulated CHORD-Galt observation of a Cyg A transit starting {}".format(human_friendly_t0))
+
+for j in range(4):
+    vis_for_wf=vis[:,:,j]
+    wf_raw=np.abs(vis_for_wf)**2
+    fringestopped_vis_for_wf=vis_for_wf*fringestopping_phase_terms[j] # wait highkey i need to verify if this is the right direction
+    wf_fringestopped=np.abs(fringestopped_vis_for_wf)**2
+
+    im= axs[0,j].imshow( wf_raw,
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   sharednorm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+    axs[0,j].set_title(row0_title_prefixes[j]+baseline_names[j])
+    im= axs[1,j].imshow( wf_fringestopped,
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   sharednorm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+
+plt.colorbar(im,ax=axs,label="ADU$^2$",shrink=0.9)
+plt.savefig("waterfalls_abs2_raw_and_fringestopped.png",dpi=300)
+plt.close()
+
+################################################################################################################################################
+# SECOND VERSION WITH RE AND IM PARTS
+Repct5=np.percentile(vis.real,5)
+lt_Re = Repct5 if Repct5>0 else 10
+Re_norm=SymLogNorm(lt_Re,
+                   vmin=vis.real.min(),vmax=vis.real.max())
+Impct5=np.percentile(vis.imag,5)
+lt_Im = Impct5 if Impct5>0 else 10
+Im_norm=SymLogNorm(lt_Im,
+                   vmin=vis.imag.min(),vmax=vis.imag.max())
+fig,axs=plt.subplots( 4,4, layout="constrained", figsize=(12,12),
+                      sharex=True, sharey=True                    
+                      )
+axs[3,0].set_xlabel("time after start of acq (hr)")
+axs[3,0].set_ylabel("freq (MHz)")
+row0_title_prefixes=["\n","                                                  Re(vis)\n","\n","\n"]
+axs[1,1].set_title("                                                          Im(vis)")
+row2_title_prefixes=["\n","                                                fringestopped Re(vis)\n","\n","\n"]
+axs[3,1].set_title("                                                       fringestopped Im(vis)")
+plt.suptitle("matvis-simulated CHORD-Galt observation of a Cyg A transit starting {}".format(human_friendly_t0))
+
+for j in range(4):
+    vis_for_wf=vis[:,:,j]
+    fringestopped_vis_for_wf=vis_for_wf*fringestopping_phase_terms[j] # wait highkey i need to verify if this is 
+
+    im= axs[0,j].imshow( vis_for_wf.real,
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   Re_norm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+    axs[0,j].set_title(row0_title_prefixes[j]+baseline_names[j])
+    if j==3:
+        plt.colorbar(im,ax=axs[0,3],label="ADU",shrink=0.9)
+    im= axs[1,j].imshow( vis_for_wf.imag,
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   Im_norm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+    if j==3:
+        plt.colorbar(im,ax=axs[1,3],label="ADU",shrink=0.9)
+    
+    im= axs[2,j].imshow( fringestopped_vis_for_wf.real,
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   Re_norm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+    axs[2,j].set_title(row2_title_prefixes[j])
+    im= axs[3,j].imshow( fringestopped_vis_for_wf.imag,
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   Im_norm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+
+plt.savefig("waterfalls_Re_Im_raw_and_fringestopped.png",dpi=300)
+plt.close()
+
+################################################################################################################################################
+amp_norm=LogNorm(vmin=np.abs(vis).min(),vmax=np.abs(vis).max())
+ph_norm=CenteredNorm(vcenter=0,halfrange=np.pi)
+# THIRD VERSION WITH AMP AND PHASE
+fig,axs=plt.subplots( 4,4, layout="constrained", figsize=(12,12),
+                      sharex=True, sharey=True                    
+                      )
+axs[3,0].set_xlabel("time after start of acq (hr)")
+axs[3,0].set_ylabel("freq (MHz)")
+row0_title_prefixes=["\n","                                                  abs(vis)\n","\n","\n"]
+axs[1,1].set_title("                                                          ph(vis)")
+row2_title_prefixes=["\n","                                                fringestopped abs(vis)\n","\n","\n"]
+axs[3,1].set_title("                                                       fringestopped ph(vis)")
+plt.suptitle("matvis-simulated CHORD-Galt observation of a Cyg A transit starting {}".format(human_friendly_t0))
+
+for j in range(4):
+    vis_for_wf=vis[:,:,j]
+    fringestopped_vis_for_wf=vis_for_wf*fringestopping_phase_terms[j] # wait highkey i need to verify if this is 
+
+    im= axs[0,j].imshow( np.abs(vis_for_wf),
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   amp_norm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+    axs[0,j].set_title(row0_title_prefixes[j]+baseline_names[j])
+    if j==3:
+        plt.colorbar(im,ax=axs[0,3],label="ADU",shrink=0.9)
+    im= axs[1,j].imshow( np.unwrap(np.angle(vis_for_wf),axis=-1),
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   ph_norm,
+                         origin= "lower",
+                         cmap=cyclic_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+    if j==3:
+        plt.colorbar(im,ax=axs[1,3],label="ADU",shrink=0.9)
+    
+    im= axs[2,j].imshow( np.abs(fringestopped_vis_for_wf),
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   amp_norm,
+                         origin= "lower",
+                         cmap=sequential_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+    axs[2,j].set_title(row2_title_prefixes[j])
+    im= axs[3,j].imshow( np.unwrap(np.angle(fringestopped_vis_for_wf),axis=-1),
+                         aspect= hr_after_start_of_acq/freq_range,
+                         norm=   ph_norm,
+                         origin= "lower",
+                         cmap=cyclic_cmap,
+                         extent= [ 0,              hr_after_start_of_acq,
+                                   FREQS[0].value, FREQS[-1].value        ]
+                         )
+
+plt.savefig("waterfalls_amp_ph_raw_and_fringestopped.png",dpi=300)
+plt.close()
